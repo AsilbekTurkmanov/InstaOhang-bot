@@ -45,3 +45,7 @@ downloads/*
 
 # Logs
 *.log
+
+# Environment variables
+.env
+!.env.example
