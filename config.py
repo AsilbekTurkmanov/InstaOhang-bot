@@ -25,8 +25,13 @@ BIN_DIR = os.path.join(BASE_DIR, "bin")
 DB_PATH = os.path.join(BASE_DIR, "database", "insta_ohang.db")
 
 # Executables
-FFMPEG_PATH = os.path.join(BIN_DIR, "ffmpeg.exe")
-FFPROBE_PATH = os.path.join(BIN_DIR, "ffprobe.exe")
+import shutil
+if os.name == 'nt' and os.path.exists(os.path.join(BIN_DIR, "ffmpeg.exe")):
+    FFMPEG_PATH = os.path.join(BIN_DIR, "ffmpeg.exe")
+    FFPROBE_PATH = os.path.join(BIN_DIR, "ffprobe.exe")
+else:
+    FFMPEG_PATH = shutil.which("ffmpeg") or "ffmpeg"
+    FFPROBE_PATH = shutil.which("ffprobe") or "ffprobe"
 
 # Create directories if not exist
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)

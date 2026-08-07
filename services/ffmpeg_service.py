@@ -5,9 +5,14 @@ from config import FFMPEG_PATH, DOWNLOAD_DIR
 
 logger = logging.getLogger(__name__)
 
+import shutil
+
 def get_ffmpeg_bin():
-    if os.path.exists(FFMPEG_PATH):
+    if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
         return FFMPEG_PATH
+    sys_ffmpeg = shutil.which("ffmpeg")
+    if sys_ffmpeg:
+        return sys_ffmpeg
     return "ffmpeg"
 
 async def convert_to_round_video(input_path: str, output_path: str = None) -> str:

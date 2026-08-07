@@ -18,7 +18,7 @@ USER_AGENTS = [
 ]
 
 def get_yt_dlp_options(extra_opts=None):
-    ffmpeg_dir = BIN_DIR if os.path.exists(FFMPEG_PATH) else None
+    ffmpeg_dir = BIN_DIR if (os.name == 'nt' and os.path.exists(FFMPEG_PATH)) else None
     opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s_%(title).30s.%(ext)s'),
