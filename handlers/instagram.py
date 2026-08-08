@@ -5,7 +5,7 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, FSInputFile, InputMediaPhoto, InputMediaVideo
 from services.downloader import download_instagram_media
 from services.ffmpeg_service import extract_audio_from_video, convert_to_round_video, change_video_speed
-from database.db import increment_user_downloads
+from database.db import increment_user_downloads, get_cached_media, save_cached_media
 from utils.helpers import (
     get_media_inline_keyboard, safe_remove_files, check_user_subscriptions,
     get_subscription_keyboard, clean_html, check_file_size
@@ -34,6 +34,28 @@ async def handle_instagram_link(message: Message):
             parse_mode="HTML"
         )
         return
+
+    # Check Instant Cache
+    cached = get_cached_media(url)
+    if cached:
+        try:
+            if cached['media_type'] == 'video':
+                await message.answer_video(
+                    video=cached['file_id'],
+                    caption=cached.get('caption') or "⚡ @InstaOhang_bot",
+                    reply_markup=get_media_inline_keyboard(),
+                    parse_mode="HTML"
+                )
+            else:
+                await message.answer_photo(
+                    photo=cached['file_id'],
+                    caption=cached.get('caption') or "⚡ @InstaOhang_bot",
+                    parse_mode="HTML"
+                )
+            increment_user_downloads(user_id, url, cached['media_type'])
+            return
+        except Exception as cache_err:
+            logger.warning(f"Cached send failed, fallback to fresh download: {cache_err}")
 
     status_msg = await message.answer("📥 <b>Instagram-dan yuklanmoqda...</b>\n<i>Iltimos biroz kuting ⏳</i>", parse_mode="HTML")
     
@@ -78,21 +100,25 @@ async def handle_instagram_link(message: Message):
                 return
 
             video_input = FSInputFile(filepath)
-            await message.answer_video(
+            sent_msg = await message.answer_video(
                 video=video_input,
                 caption=caption,
                 reply_markup=get_media_inline_keyboard(),
                 parse_mode="HTML"
             )
+            if sent_msg and sent_msg.video:
+                save_cached_media(url, sent_msg.video.file_id, 'video', caption)
         else:
             filepath = media_data['filepath']
             all_files_to_clean.append(filepath)
             photo_input = FSInputFile(filepath)
-            await message.answer_photo(
+            sent_msg = await message.answer_photo(
                 photo=photo_input,
                 caption=caption,
                 parse_mode="HTML"
             )
+            if sent_msg and sent_msg.photo:
+                save_cached_media(url, sent_msg.photo[-1].file_id, 'photo', caption)
             
         increment_user_downloads(user_id, url, media_type)
         await status_msg.delete()

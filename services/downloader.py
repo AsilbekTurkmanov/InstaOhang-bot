@@ -20,13 +20,18 @@ USER_AGENTS = [
 def get_yt_dlp_options(extra_opts=None):
     ffmpeg_dir = BIN_DIR if (os.name == 'nt' and os.path.exists(FFMPEG_PATH)) else None
     opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'format': 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s_%(title).30s.%(ext)s'),
         'quiet': True,
         'no_warnings': True,
         'restrictfilenames': True,
         'merge_output_format': 'mp4',
         'nocheckcertificate': True,
+        'concurrent_fragment_downloads': 8,
+        'socket_timeout': 10,
+        'buffersize': 1048576,
+        'http_chunk_size': 10485760,
+        'noplaylist': True,
         'user_agent': random.choice(USER_AGENTS),
         'http_headers': {
             'User-Agent': random.choice(USER_AGENTS),

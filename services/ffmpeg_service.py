@@ -18,7 +18,7 @@ def get_ffmpeg_bin():
 async def convert_to_round_video(input_path: str, output_path: str = None) -> str:
     """
     Converts a standard video to Telegram 1:1 circular Video Note (MP4).
-    Crops to center square and resizes to 640x640 asynchronously.
+    Crops to center square and resizes to 640x640 asynchronously with ultrafast encoding.
     """
     if not output_path:
         base = os.path.splitext(input_path)[0]
@@ -29,11 +29,12 @@ async def convert_to_round_video(input_path: str, output_path: str = None) -> st
     
     args = [
         "-y",
+        "-threads", "0",
         "-i", input_path,
         "-vf", filter_complex,
         "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "22",
+        "-preset", "ultrafast",
+        "-crf", "24",
         "-c:a", "aac",
         "-b:a", "128k",
         "-ar", "44100",
@@ -58,7 +59,7 @@ async def convert_to_round_video(input_path: str, output_path: str = None) -> st
 
 async def extract_audio_from_video(input_path: str, output_mp3_path: str = None) -> str:
     """
-    Extracts high quality MP3 audio from a video file asynchronously.
+    Extracts high quality MP3 audio from a video file asynchronously with multithreading.
     """
     if not output_mp3_path:
         base = os.path.splitext(input_path)[0]
@@ -68,6 +69,7 @@ async def extract_audio_from_video(input_path: str, output_mp3_path: str = None)
     
     args = [
         "-y",
+        "-threads", "0",
         "-i", input_path,
         "-vn",
         "-acodec", "libmp3lame",
@@ -92,7 +94,7 @@ async def extract_audio_from_video(input_path: str, output_mp3_path: str = None)
 
 async def change_video_speed(input_path: str, speed: float = 1.5, output_path: str = None) -> str:
     """
-    Changes video speed (e.g. 1.5x fast or 0.8x slow) asynchronously.
+    Changes video speed (e.g. 1.5x fast or 0.8x slow) asynchronously with ultrafast encoding.
     """
     if not output_path:
         base = os.path.splitext(input_path)[0]
@@ -103,12 +105,13 @@ async def change_video_speed(input_path: str, speed: float = 1.5, output_path: s
     
     args = [
         "-y",
+        "-threads", "0",
         "-i", input_path,
         "-filter_complex", f"[0:v]setpts={pts_val}*PTS[v];[0:a]atempo={speed}[a]",
         "-map", "[v]",
         "-map", "[a]",
         "-c:v", "libx264",
-        "-preset", "fast",
+        "-preset", "ultrafast",
         output_path
     ]
     

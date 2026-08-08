@@ -4,6 +4,7 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from services.downloader import search_music_results, download_music_by_id
 from services.ffmpeg_service import extract_audio_from_video, change_video_speed
+from database.db import get_cached_media, save_cached_media
 from utils.helpers import (
     safe_remove_files, check_user_subscriptions, get_subscription_keyboard,
     clean_html, check_file_size
@@ -66,8 +67,22 @@ async def cb_download_music(callback: CallbackQuery):
         return
 
     video_id = callback.data.split("dl_music:")[1]
-    await callback.answer("📥 Musiqa yuklanmoqda...")
     
+    # Check Instant Cache
+    cached = get_cached_media(f"yt_{video_id}")
+    if cached:
+        try:
+            await callback.answer("⚡ Keshdan yuklanmoqda...")
+            await callback.message.answer_audio(
+                audio=cached['file_id'],
+                caption="🎧 <b>InstaOhang Music Engine</b>\n🤖 @InstaOhang_bot",
+                parse_mode="HTML"
+            )
+            return
+        except Exception as cache_err:
+            logger.warning(f"Cached audio send failed: {cache_err}")
+
+    await callback.answer("📥 Musiqa yuklanmoqda...")
     status_msg = await callback.message.reply("⏳ <b>Musiqa yuklab olinmoqda...</b>", parse_mode="HTML")
     
     try:
@@ -84,7 +99,7 @@ async def cb_download_music(callback: CallbackQuery):
             return
 
         audio_file = FSInputFile(mp3_path)
-        await callback.message.answer_audio(
+        sent_audio = await callback.message.answer_audio(
             audio=audio_file,
             title=title,
             performer=performer,
@@ -92,6 +107,9 @@ async def cb_download_music(callback: CallbackQuery):
             caption="🎧 <b>InstaOhang Music Engine</b>\n🤖 @InstaOhang_bot",
             parse_mode="HTML"
         )
+        if sent_audio and sent_audio.audio:
+            save_cached_media(f"yt_{video_id}", sent_audio.audio.file_id, 'audio', title)
+
         await status_msg.delete()
         safe_remove_files(mp3_path)
     except Exception as e:
