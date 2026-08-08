@@ -12,6 +12,9 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL;")
+    cursor.execute("PRAGMA synchronous = NORMAL;")
+    cursor.execute("PRAGMA cache_size = -64000;") # 64MB cache
+    cursor.execute("PRAGMA temp_store = MEMORY;")
     
     # Users table
     cursor.execute('''
@@ -44,8 +47,66 @@ def init_db():
         )
     ''')
     
+    # Media cache table for instant re-downloads via Telegram file_id
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS media_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url_or_id TEXT UNIQUE,
+            file_id TEXT,
+            media_type TEXT,
+            caption TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_media_cache ON media_cache(url_or_id);')
+
+    # Portfolio contact messages table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS portfolio_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            email TEXT,
+            subject TEXT,
+            message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
     conn.commit()
     conn.close()
+
+def get_cached_media(url_or_id: str):
+    """Retrieves cached Telegram file_id if exists."""
+    if not url_or_id:
+        return None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT file_id, media_type, caption FROM media_cache WHERE url_or_id = ?', (url_or_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return dict(row)
+    except Exception as e:
+        pass
+    return None
+
+def save_cached_media(url_or_id: str, file_id: str, media_type: str, caption: str = ""):
+    """Saves Telegram file_id to media_cache for instant future responses."""
+    if not url_or_id or not file_id:
+        return
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO media_cache (url_or_id, file_id, media_type, caption)
+            VALUES (?, ?, ?, ?)
+        ''', (url_or_id, file_id, media_type, caption))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        pass
+
 
 def add_user(user_id: int, full_name: str, username: str = None):
     conn = get_connection()
@@ -134,3 +195,28 @@ def get_channels():
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+def save_portfolio_message(name: str, email: str, subject: str, message: str):
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO portfolio_messages (name, email, subject, message)
+            VALUES (?, ?, ?, ?)
+        ''', (name, email, subject, message))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Database error saving portfolio message: {e}")
+
+def get_portfolio_messages(limit: int = 15):
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM portfolio_messages ORDER BY id DESC LIMIT ?', (limit,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        print(f"Database error getting portfolio messages: {e}")
+        return []

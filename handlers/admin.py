@@ -4,13 +4,65 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message
 from config import ADMIN_IDS
-from database.db import get_stats, get_all_users, add_channel, remove_channel, get_channels, get_user_rank
+from database.db import get_stats, get_all_users, add_channel, remove_channel, get_channels, get_user_rank, get_portfolio_messages
+from utils.helpers import clean_html
 
 router = Router()
 logger = logging.getLogger(__name__)
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+@router.message(F.text == "📩 Portfolio xabarlari")
+@router.message(Command("portfolio"))
+async def cmd_portfolio_messages(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    messages_list = []
+    # Try fetching from C# Portfolio API backend first
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get("http://localhost:5056/api/contact", timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                if resp.status == 200:
+                    messages_list = await resp.json()
+    except Exception as e:
+        logger.warning(f"Could not fetch portfolio messages from API: {e}")
+
+    # Fall back to SQLite database if API didn't return any list
+    if not messages_list:
+        messages_list = get_portfolio_messages(limit=15)
+
+    if not messages_list:
+        await message.answer("📭 <b>Portfolio veb-saytidan hali hech qanday xabar kelgani yo'q.</b>", parse_mode="HTML")
+        return
+
+    text_lines = [f"📩 <b>Portfolio Veb-saytidan Kelgan Xabarlar ({len(messages_list)} ta):</b>\n"]
+    
+    for idx, msg in enumerate(messages_list, 1):
+        name = msg.get("name") or msg.get("Name") or "Noma'lum"
+        email = msg.get("email") or msg.get("Email") or "-"
+        subject = msg.get("subject") or msg.get("Subject") or "Mavzuga ega emas"
+        msg_content = msg.get("message") or msg.get("Message") or "-"
+        sent_at = msg.get("sentAt") or msg.get("created_at") or "-"
+        
+        text_lines.append(
+            f"<b>{idx}. 👤 Ism:</b> {clean_html(name)}\n"
+            f"📧 <b>Email:</b> {clean_html(email)}\n"
+            f"📌 <b>Mavzu:</b> {clean_html(subject)}\n"
+            f"💬 <b>Xabar:</b> {clean_html(msg_content)}\n"
+            f"⏰ <b>Vaqt:</b> {clean_html(sent_at)}\n"
+            f"───────────────────"
+        )
+
+    full_text = "\n".join(text_lines)
+    if len(full_text) > 4000:
+        chunks = [full_text[i:i+4000] for i in range(0, len(full_text), 4000)]
+        for chunk in chunks:
+            await message.answer(chunk, parse_mode="HTML")
+    else:
+        await message.answer(full_text, parse_mode="HTML")
 
 @router.message(F.text == "📊 Admin Panel")
 @router.message(Command("admin"))
@@ -31,6 +83,7 @@ async def cmd_admin_panel(message: Message):
         "📢 <b>Majburiy kanallar:</b>\n"
         f"{ch_list}\n\n"
         "⚙️ <b>Admin Buyruqlari:</b>\n"
+        "• <code>/portfolio</code> - Portfolio-dan kelgan barcha xabarlar ro'yxati\n"
         "• <code>/send &lt;matn&gt;</code> - Barcha foydalanuvchilarga xabar tarqatish\n"
         "• <code>/addchannel &lt;channel_id&gt; &lt;sarlavha&gt; &lt;link&gt;</code> - Kanal qo'shish\n"
         "• <code>/delchannel &lt;channel_id&gt;</code> - Kanalni o'chirish"

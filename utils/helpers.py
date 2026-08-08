@@ -37,7 +37,10 @@ def get_main_reply_keyboard(is_admin: bool = False):
         [KeyboardButton(text="⚙️ AI Agent-Info")]
     ]
     if is_admin:
-        keyboard.append([KeyboardButton(text="📊 Admin Panel")])
+        keyboard.append([
+            KeyboardButton(text="📊 Admin Panel"),
+            KeyboardButton(text="📩 Portfolio xabarlari")
+        ])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 def get_media_inline_keyboard(video_file_id: str = None):

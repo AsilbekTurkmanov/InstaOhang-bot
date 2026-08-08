@@ -102,6 +102,7 @@ async def main():
             BotCommand(command="agent",  description="AI Agent yordamchisi 🤖"),
             BotCommand(command="users",  description="Foydalanuvchilar soni 👥"),
             BotCommand(command="admin",  description="Admin panel 📊"),
+            BotCommand(command="portfolio", description="Portfolio xabarlari (Admin) 📩"),
         ])
         logger.info("Bot description and commands set successfully.")
     except Exception as e:
