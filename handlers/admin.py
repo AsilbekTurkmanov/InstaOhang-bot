@@ -32,37 +32,36 @@ async def cmd_portfolio_messages(message: Message):
 
     # Fall back to SQLite database if API didn't return any list
     if not messages_list:
-        messages_list = get_portfolio_messages(limit=15)
+        messages_list = get_portfolio_messages(limit=100)
 
     if not messages_list:
         await message.answer("📭 <b>Portfolio veb-saytidan hali hech qanday xabar kelgani yo'q.</b>", parse_mode="HTML")
         return
 
-    text_lines = [f"📩 <b>Portfolio Veb-saytidan Kelgan Xabarlar ({len(messages_list)} ta):</b>\n"]
-    
+    # Header
+    intro_header = f"📩 <b>Portfolio Veb-saytidan Kelgan Barcha Xabarlar (Jami: {len(messages_list)} ta):</b>"
+    await message.answer(intro_header, parse_mode="HTML")
+
+    # Format each message with explicit ID starting from 1
     for idx, msg in enumerate(messages_list, 1):
+        msg_id = msg.get("id") or msg.get("Id") or idx
         name = msg.get("name") or msg.get("Name") or "Noma'lum"
         email = msg.get("email") or msg.get("Email") or "-"
         subject = msg.get("subject") or msg.get("Subject") or "Mavzuga ega emas"
         msg_content = msg.get("message") or msg.get("Message") or "-"
         sent_at = msg.get("sentAt") or msg.get("created_at") or "-"
-        
-        text_lines.append(
-            f"<b>{idx}. 👤 Ism:</b> {clean_html(name)}\n"
+
+        card_text = (
+            f"🆔 <b>ID: #{msg_id}</b>\n"
+            f"👤 <b>Ism:</b> {clean_html(name)}\n"
             f"📧 <b>Email:</b> {clean_html(email)}\n"
             f"📌 <b>Mavzu:</b> {clean_html(subject)}\n"
-            f"💬 <b>Xabar:</b> {clean_html(msg_content)}\n"
+            f"💬 <b>Xabar:</b>\n{clean_html(msg_content)}\n\n"
             f"⏰ <b>Vaqt:</b> {clean_html(sent_at)}\n"
-            f"───────────────────"
+            f"━━━━━━━━━━━━━━━━━━━"
         )
-
-    full_text = "\n".join(text_lines)
-    if len(full_text) > 4000:
-        chunks = [full_text[i:i+4000] for i in range(0, len(full_text), 4000)]
-        for chunk in chunks:
-            await message.answer(chunk, parse_mode="HTML")
-    else:
-        await message.answer(full_text, parse_mode="HTML")
+        await message.answer(card_text, parse_mode="HTML")
+        await asyncio.sleep(0.05)
 
 @router.message(F.text == "📊 Admin Panel")
 @router.message(Command("admin"))

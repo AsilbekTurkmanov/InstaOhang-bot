@@ -209,11 +209,11 @@ def save_portfolio_message(name: str, email: str, subject: str, message: str):
     except Exception as e:
         print(f"Database error saving portfolio message: {e}")
 
-def get_portfolio_messages(limit: int = 15):
+def get_portfolio_messages(limit: int = 100):
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM portfolio_messages ORDER BY id DESC LIMIT ?', (limit,))
+        cursor.execute('SELECT * FROM portfolio_messages ORDER BY id ASC LIMIT ?', (limit,))
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
