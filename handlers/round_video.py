@@ -55,5 +55,9 @@ async def cmd_round(message: Message):
         
     except Exception as e:
         logger.error(f"Error in /round handler: {e}")
-        await status_msg.edit_text(f"❌ <b>Dumaloq video tayyorlashda xatolik yuz berdi:</b>\n{clean_html(str(e))}", parse_mode="HTML")
+        await status_msg.edit_text(
+            "❌ <b>Dumaloq video tayyorlashda xatolik yuz berdi.</b>\n\n"
+            "Iltimos, birozdan keyin qayta urinib ko'ring.",
+            parse_mode="HTML"
+        )
         safe_remove_files(temp_in)
