@@ -177,9 +177,74 @@ async def cmd_users_count(message: Message):
 # Uses batch + sleep strategy and handles 429 Too Many Requests
 # ─────────────────────────────────────────────────────────────────────────────
 
-BROADCAST_BATCH_SIZE = 25        # messages per batch
-BROADCAST_BATCH_DELAY = 1.0      # seconds between batches (~25 msg/sec)
-BROADCAST_RETRY_DELAY = 10.0     # seconds to wait on 429 Too Many Requests
+# Track active broadcast background tasks to prevent garbage collection and allow clean shutdown
+_active_broadcast_tasks: set[asyncio.Task] = set()
+
+
+async def _run_broadcast_task(
+    bot,
+    target_msg: Message,
+    message: Message,
+    user_ids: list[int],
+    admin_chat_id: int,
+    broadcast_text: str,
+) -> None:
+    """Background task executing the broadcast asynchronously."""
+    total_users = len(user_ids)
+    count_success = 0
+    count_fail = 0
+
+    try:
+        for i in range(0, total_users, BROADCAST_BATCH_SIZE):
+            batch = user_ids[i: i + BROADCAST_BATCH_SIZE]
+
+            for uid in batch:
+                try:
+                    if target_msg != message:
+                        await target_msg.copy_to(chat_id=uid)
+                    else:
+                        await bot.send_message(chat_id=uid, text=broadcast_text)
+                    count_success += 1
+
+                except Exception as exc:
+                    exc_str = str(exc)
+                    if "429" in exc_str or "Too Many Requests" in exc_str:
+                        logger.warning(f"Broadcast rate limited. Waiting {BROADCAST_RETRY_DELAY}s...")
+                        await asyncio.sleep(BROADCAST_RETRY_DELAY)
+                        try:
+                            if target_msg != message:
+                                await target_msg.copy_to(chat_id=uid)
+                            else:
+                                await bot.send_message(chat_id=uid, text=broadcast_text)
+                            count_success += 1
+                        except Exception:
+                            count_fail += 1
+                    else:
+                        count_fail += 1
+
+            if i + BROADCAST_BATCH_SIZE < total_users:
+                await asyncio.sleep(BROADCAST_BATCH_DELAY)
+
+        await bot.send_message(
+            chat_id=admin_chat_id,
+            text=(
+                f"✅ <b>Reklama tarqatish yakunlandi!</b>\n\n"
+                f"🟢 Yuborildi: {count_success:,} ta\n"
+                f"🔴 Yetib bormadi (block): {count_fail:,} ta"
+            ),
+            parse_mode="HTML",
+        )
+    except Exception as err:
+        logger.error(f"Broadcast background task error: {err}")
+        try:
+            await bot.send_message(
+                chat_id=admin_chat_id,
+                text=f"❌ <b>Reklama tarqatishda xatolik yuz berdi:</b> {clean_html(str(err))}",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
 
 @router.message(Command("send"))
 async def cmd_broadcast(message: Message):
@@ -187,7 +252,8 @@ async def cmd_broadcast(message: Message):
         return
 
     target_msg = message.reply_to_message if message.reply_to_message else message
-    if target_msg == message and not message.text.replace("/send", "").strip():
+    broadcast_text = message.text.replace("/send", "").strip()
+    if target_msg == message and not broadcast_text:
         await message.answer(
             "⚠️ Iltimos, tarqatmoqchi bo'lgan xabarga reply qilib <code>/send</code> yuboring!",
             parse_mode="HTML",
@@ -197,54 +263,24 @@ async def cmd_broadcast(message: Message):
     user_ids = await get_all_user_ids()
     total_users = len(user_ids)
     await message.answer(
-        f"🚀 Xabar <b>{total_users:,}</b> ta foydalanuvchiga yuborilmoqda...\n"
-        f"<i>Bu biroz vaqt olishi mumkin.</i>",
+        f"🚀 <b>Xabar {total_users:,} ta foydalanuvchiga fonda tarqatilmoqda...</b>\n"
+        f"<i>Tugaganda sizga bildirishnoma keladi.</i>",
         parse_mode="HTML",
     )
 
-    count_success = 0
-    count_fail = 0
-
-    for i in range(0, total_users, BROADCAST_BATCH_SIZE):
-        batch = user_ids[i: i + BROADCAST_BATCH_SIZE]
-
-        for uid in batch:
-            try:
-                if target_msg != message:
-                    await target_msg.copy_to(chat_id=uid)
-                else:
-                    broadcast_text = message.text.replace("/send", "").strip()
-                    await message.bot.send_message(chat_id=uid, text=broadcast_text)
-                count_success += 1
-
-            except Exception as exc:
-                exc_str = str(exc)
-                if "429" in exc_str or "Too Many Requests" in exc_str:
-                    # Telegram rate limit — back off and retry once
-                    logger.warning(f"Broadcast rate limited. Waiting {BROADCAST_RETRY_DELAY}s...")
-                    await asyncio.sleep(BROADCAST_RETRY_DELAY)
-                    try:
-                        if target_msg != message:
-                            await target_msg.copy_to(chat_id=uid)
-                        else:
-                            broadcast_text = message.text.replace("/send", "").strip()
-                            await message.bot.send_message(chat_id=uid, text=broadcast_text)
-                        count_success += 1
-                    except Exception:
-                        count_fail += 1
-                else:
-                    count_fail += 1
-
-        # Delay between batches to stay within Telegram limits
-        if i + BROADCAST_BATCH_SIZE < total_users:
-            await asyncio.sleep(BROADCAST_BATCH_DELAY)
-
-    await message.answer(
-        f"✅ <b>Reklama tarqatish yakunlandi!</b>\n\n"
-        f"🟢 Yuborildi: {count_success} ta\n"
-        f"🔴 Yetib bormadi (block): {count_fail} ta",
-        parse_mode="HTML",
+    # Launch background task and store reference
+    task = asyncio.create_task(
+        _run_broadcast_task(
+            bot=message.bot,
+            target_msg=target_msg,
+            message=message,
+            user_ids=user_ids,
+            admin_chat_id=message.chat.id,
+            broadcast_text=broadcast_text,
+        )
     )
+    _active_broadcast_tasks.add(task)
+    task.add_done_callback(_active_broadcast_tasks.discard)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

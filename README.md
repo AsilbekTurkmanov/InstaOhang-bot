@@ -141,7 +141,7 @@ ASSISTANT_BOT_TOKEN=optional_second_bot_token
 ADMIN_IDS=5246861200
 
 # PostgreSQL
-DATABASE_URL=postgresql://postgres:1234@localhost:5432/instaohang
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/instaohang
 ```
 
 > ⚠️ **Muhim:** `.env` faylini Git ga commit qilmang! `.gitignore` da allaqachon mavjud.
@@ -220,7 +220,7 @@ services:
     image: postgres:15
     environment:
       POSTGRES_DB: instaohang
-      POSTGRES_PASSWORD: 1234
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-your_db_password}
     ports:
       - "5432:5432"
   

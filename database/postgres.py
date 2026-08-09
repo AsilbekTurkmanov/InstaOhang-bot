@@ -107,13 +107,20 @@ async def init_db_schema() -> None:
             # ─── Media cache (Telegram file_id reuse) ────────────────────────
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS media_cache (
-                    id          BIGSERIAL PRIMARY KEY,
-                    url_or_id   TEXT    UNIQUE NOT NULL,
-                    file_id     TEXT    NOT NULL,
-                    media_type  TEXT    NOT NULL,
-                    caption     TEXT    DEFAULT '',
-                    created_at  TIMESTAMPTZ DEFAULT NOW()
+                    id           BIGSERIAL PRIMARY KEY,
+                    url_or_id    TEXT    UNIQUE NOT NULL,
+                    file_id      TEXT    NOT NULL,
+                    media_type   TEXT    NOT NULL,
+                    caption      TEXT    DEFAULT '',
+                    hit_count    INTEGER DEFAULT 1,
+                    last_used_at TIMESTAMPTZ DEFAULT NOW(),
+                    created_at   TIMESTAMPTZ DEFAULT NOW()
                 )
+            """)
+            # Idempotent migration for existing installations
+            await conn.execute("""
+                ALTER TABLE media_cache ADD COLUMN IF NOT EXISTS hit_count INTEGER DEFAULT 1;
+                ALTER TABLE media_cache ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ DEFAULT NOW();
             """)
 
             # ─── Music Categories ─────────────────────────────────────────────

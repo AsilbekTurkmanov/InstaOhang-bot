@@ -4,6 +4,7 @@ All functions are async and use the global asyncpg connection pool.
 """
 
 import logging
+import asyncpg
 from datetime import datetime, timezone
 from typing import Optional
 from database.postgres import get_pool
@@ -167,19 +168,29 @@ async def get_channels() -> list[dict]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def get_cached_media(url_or_id: str) -> Optional[dict]:
-    """Returns cached Telegram file_id metadata if exists."""
+    """Returns cached Telegram file_id metadata if exists. Updates last_used_at and hit_count."""
     if not url_or_id:
         return None
     pool = get_pool()
     try:
+        now = datetime.now(timezone.utc)
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT file_id, media_type, caption FROM media_cache WHERE url_or_id = $1",
-                url_or_id,
+                """
+                UPDATE media_cache
+                SET last_used_at = $2,
+                    hit_count    = hit_count + 1
+                WHERE url_or_id = $1
+                RETURNING file_id, media_type, caption
+                """,
+                url_or_id, now,
             )
         return dict(row) if row else None
+    except asyncpg.PostgresError as e:
+        logger.warning(f"get_cached_media DB error: {e}")
+        return None
     except Exception as e:
-        logger.warning(f"get_cached_media error: {e}")
+        logger.warning(f"get_cached_media unexpected error: {e}")
         return None
 
 
@@ -307,7 +318,8 @@ async def get_music_by_file_unique_id(file_unique_id: str) -> Optional[dict]:
 async def add_favorite(user_id: int, music_id: int) -> bool:
     """
     Adds a music track to user's favorites.
-    Returns True if added, False if already existed (duplicate).
+    Returns True if added, False if already favorited (duplicate).
+    Only catches asyncpg.UniqueViolationError — other errors propagate.
     """
     pool = get_pool()
     try:
@@ -317,9 +329,12 @@ async def add_favorite(user_id: int, music_id: int) -> bool:
                 user_id, music_id,
             )
         return True
-    except Exception:
-        # Unique constraint violation — already favorited
+    except asyncpg.UniqueViolationError:
+        # Expected: user already added this track to favorites
         return False
+    except asyncpg.PostgresError as e:
+        logger.error(f"add_favorite DB error (user={user_id}, music={music_id}): {e}")
+        raise
 
 
 async def remove_favorite(user_id: int, music_id: int) -> bool:

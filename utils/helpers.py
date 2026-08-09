@@ -120,9 +120,22 @@ def get_subscription_keyboard(missing_channels: list) -> InlineKeyboardMarkup:
 # Subscription check (async, with TTL cache)
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def _check_single_channel(bot: Bot, user_id: int, ch: dict) -> dict | None:
+    """Helper to check member status for one channel. Returns ch if missing, None if subbed/error."""
+    try:
+        member = await bot.get_chat_member(chat_id=ch["channel_id"], user_id=user_id)
+        if member.status in ("left", "kicked"):
+            return ch
+    except Exception as e:
+        logger.warning(
+            f"Could not check channel membership for {ch['channel_id']}: {e}"
+        )
+    return None
+
+
 async def check_user_subscriptions(bot: Bot, user_id: int) -> tuple[bool, list]:
     """
-    Checks if user is subscribed to all mandatory channels.
+    Checks if user is subscribed to all mandatory channels in parallel using asyncio.gather.
     Uses a 60-second in-memory TTL cache per user.
     Returns (is_subscribed, missing_channels_list).
     """
@@ -140,16 +153,11 @@ async def check_user_subscriptions(bot: Bot, user_id: int) -> tuple[bool, list]:
         SUB_CACHE[user_id] = (now, True, [])
         return True, []
 
-    missing_channels = []
-    for ch in channels:
-        try:
-            member = await bot.get_chat_member(chat_id=ch["channel_id"], user_id=user_id)
-            if member.status in ("left", "kicked"):
-                missing_channels.append(ch)
-        except Exception as e:
-            logger.warning(
-                f"Could not check channel membership for {ch['channel_id']}: {e}"
-            )
+    # Parallel channel check via asyncio.gather
+    results = await asyncio.gather(
+        *[_check_single_channel(bot, user_id, ch) for ch in channels]
+    )
+    missing_channels = [ch for ch in results if ch is not None]
 
     is_subbed = len(missing_channels) == 0
     _evict_sub_cache()

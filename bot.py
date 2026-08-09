@@ -105,9 +105,9 @@ async def main():
         )
         sys.exit(1)
 
-    # 2. Startup file cleanup
+    # 2. Startup file cleanup & managed background task
     cleanup_old_temp_files(max_age_seconds=1800)
-    asyncio.create_task(periodic_temp_cleanup())
+    cleanup_task = asyncio.create_task(periodic_temp_cleanup())
 
     # 3. Create bot and dispatcher
     logger.info("Starting @InstaOhang_bot...")
@@ -120,9 +120,10 @@ async def main():
     # 4. Register global error handler FIRST
     dp.include_router(error_router)
 
-    # 5. Register throttling middleware
-    dp.message.middleware(ThrottlingMiddleware(limit_seconds=1.5))
-    dp.callback_query.middleware(ThrottlingMiddleware(limit_seconds=1.0))
+    # 5. Register throttling middleware (memory-safe, operation-aware)
+    throttle_mw = ThrottlingMiddleware()
+    dp.message.middleware(throttle_mw)
+    dp.callback_query.middleware(throttle_mw)
 
     # 6. Register feature routers
     dp.include_router(start.router)
@@ -165,14 +166,19 @@ async def main():
         except Exception as e:
             logger.error(f"Could not start secondary assistant bot: {e}")
 
-    # 10. Start polling
+    # 10. Start polling with graceful shutdown
     try:
         await dp.start_polling(*bots_to_poll)
     finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
         for b in bots_to_poll:
             await b.session.close()
         await close_pool()
-        logger.info("Bot stopped. PostgreSQL pool closed.")
+        logger.info("Bot stopped. PostgreSQL pool and background tasks closed cleanly.")
 
 
 if __name__ == "__main__":
