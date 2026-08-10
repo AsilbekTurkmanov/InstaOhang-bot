@@ -3,6 +3,7 @@ Async database access layer for @InstaOhang_bot.
 All functions are async and use the global asyncpg connection pool.
 """
 
+import time
 import logging
 import asyncpg
 from datetime import datetime, timezone
@@ -89,8 +90,23 @@ async def get_all_user_ids() -> list[int]:
     return [row["telegram_id"] for row in rows]
 
 
+# Fast in-memory TTL caches for maximum bot responsiveness
+_STATS_CACHE: tuple[float, dict] | None = None
+_STATS_TTL_SEC = 10.0
+
+_CHANNELS_CACHE: tuple[float, list[dict]] | None = None
+_CHANNELS_TTL_SEC = 30.0
+
+
 async def get_stats() -> dict:
-    """Returns aggregated statistics: users, downloads, active today/week."""
+    """Returns aggregated statistics with fast 10-second TTL in-memory caching."""
+    global _STATS_CACHE
+    now = time.time()
+    if _STATS_CACHE is not None:
+        cached_ts, cached_data = _STATS_CACHE
+        if now - cached_ts < _STATS_TTL_SEC:
+            return cached_data
+
     pool = get_pool()
     async with pool.acquire() as conn:
         total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
@@ -103,12 +119,15 @@ async def get_stats() -> dict:
             "SELECT COUNT(DISTINCT user_id) FROM downloads "
             "WHERE created_at >= NOW() - INTERVAL '7 days'"
         )
-    return {
+
+    data = {
         "total_users": total_users or 0,
         "total_downloads": total_downloads or 0,
         "active_today": active_today or 0,
         "active_week": active_week or 0,
     }
+    _STATS_CACHE = (now, data)
+    return data
 
 
 async def get_user_rank(telegram_id: int) -> Optional[int]:
@@ -133,6 +152,11 @@ async def get_user_rank(telegram_id: int) -> Optional[int]:
 # Channels (mandatory subscriptions)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _invalidate_channels_cache() -> None:
+    global _CHANNELS_CACHE
+    _CHANNELS_CACHE = None
+
+
 async def add_channel(channel_id: int, title: str, invite_link: str) -> None:
     pool = get_pool()
     async with pool.acquire() as conn:
@@ -146,6 +170,7 @@ async def add_channel(channel_id: int, title: str, invite_link: str) -> None:
             """,
             channel_id, title, invite_link,
         )
+    _invalidate_channels_cache()
 
 
 async def remove_channel(channel_id: int) -> None:
@@ -154,13 +179,24 @@ async def remove_channel(channel_id: int) -> None:
         await conn.execute(
             "DELETE FROM channels WHERE channel_id = $1", channel_id
         )
+    _invalidate_channels_cache()
 
 
 async def get_channels() -> list[dict]:
+    """Returns list of active channels with fast 30-second TTL in-memory caching."""
+    global _CHANNELS_CACHE
+    now = time.time()
+    if _CHANNELS_CACHE is not None:
+        cached_ts, cached_data = _CHANNELS_CACHE
+        if now - cached_ts < _CHANNELS_TTL_SEC:
+            return cached_data
+
     pool = get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("SELECT channel_id, title, invite_link FROM channels")
-    return [dict(row) for row in rows]
+    result = [dict(row) for row in rows]
+    _CHANNELS_CACHE = (now, result)
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -223,27 +259,79 @@ async def save_cached_media(
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def save_portfolio_message(
-    name: str, email: str, subject: str, message: str
+    name: str,
+    email: str,
+    subject: str,
+    message: str,
+    phone: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    status: str = "new",
+    telegram_id: Optional[int] = None,
 ) -> None:
     pool = get_pool()
     try:
         async with pool.acquire() as conn:
             await conn.execute(
-                "INSERT INTO portfolio_messages (name, email, subject, message) "
-                "VALUES ($1, $2, $3, $4)",
-                name, email, subject, message,
+                """
+                INSERT INTO portfolio_messages
+                    (name, email, phone, subject, message, ip_address, status, telegram_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """,
+                name, email, phone, subject, message, ip_address, status, telegram_id,
             )
     except Exception as e:
         logger.error(f"save_portfolio_message error: {e}")
 
 
-async def get_portfolio_messages(limit: int = 100) -> list[dict]:
+async def upsert_portfolio_message(
+    name: str,
+    email: str,
+    subject: str,
+    message: str,
+    phone: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    status: str = "new",
+    telegram_id: Optional[int] = None,
+) -> bool:
+    """
+    Saves portfolio message to PostgreSQL if not already present.
+    Returns True if a new message was inserted, False if already existed.
+    """
+    if not (name or email or message):
+        return False
+    pool = get_pool()
+    try:
+        async with pool.acquire() as conn:
+            existing = await conn.fetchval(
+                "SELECT id FROM portfolio_messages WHERE name = $1 AND email = $2 AND message = $3",
+                name, email, message,
+            )
+            if not existing:
+                await conn.execute(
+                    """
+                    INSERT INTO portfolio_messages
+                        (name, email, phone, subject, message, ip_address, status, telegram_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    """,
+                    name, email, phone, subject, message, ip_address, status, telegram_id,
+                )
+                return True
+            return False
+    except Exception as e:
+        logger.error(f"upsert_portfolio_message error: {e}")
+        return False
+
+
+async def get_portfolio_messages(limit: int = 10000) -> list[dict]:
+    """Returns all portfolio messages ordered by id ASC (from ID #1 up to N)."""
     pool = get_pool()
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id, name, email, subject, message, created_at "
-                "FROM portfolio_messages ORDER BY id ASC LIMIT $1",
+                """
+                SELECT id, name, email, phone, subject, message, ip_address, status, telegram_id, created_at
+                FROM portfolio_messages ORDER BY id ASC LIMIT $1
+                """,
                 limit,
             )
         return [dict(row) for row in rows]

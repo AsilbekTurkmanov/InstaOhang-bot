@@ -8,7 +8,7 @@ from config import ADMIN_IDS
 from database.db import (
     get_stats, get_all_user_ids,
     add_channel, remove_channel, get_channels,
-    get_user_rank, get_portfolio_messages,
+    get_user_rank, get_portfolio_messages, upsert_portfolio_message,
 )
 from utils.helpers import clean_html
 
@@ -22,17 +22,54 @@ def is_admin(user_id: int) -> bool:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Portfolio messages
-# ─────────────────────────────────────────────────────────────────────────────
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-@router.message(F.text == "📩 Portfolio xabarlari")
-@router.message(Command("portfolio"))
-async def cmd_portfolio_messages(message: Message):
-    if not is_admin(message.from_user.id):
-        return
+def _format_portfolio_card(msg: dict, index: int, total: int) -> tuple[str, InlineKeyboardMarkup]:
+    msg_id    = msg.get("id") or msg.get("Id") or index
+    name      = msg.get("name") or msg.get("Name") or msg.get("fullName") or "Noma'lum"
+    email     = msg.get("email") or msg.get("Email") or "-"
+    phone     = msg.get("phone") or msg.get("Phone") or msg.get("tel") or "-"
+    tg_id     = msg.get("telegram_id") or msg.get("telegramId") or msg.get("tgId")
+    ip_addr   = msg.get("ip_address") or msg.get("ipAddress") or msg.get("ip") or "-"
+    subject   = msg.get("subject") or msg.get("Subject") or "Mavzuga ega emas"
+    content   = msg.get("message") or msg.get("Message") or msg.get("content") or "-"
+    sent_at   = msg.get("sentAt") or msg.get("created_at") or msg.get("createdAt") or "-"
+    status    = msg.get("status") or msg.get("Status") or "yangi"
 
-    messages_list = []
+    tg_str = f"<code>{tg_id}</code> (<a href='tg://user?id={tg_id}'>Profil</a>)" if tg_id else "-"
 
-    # Try fetching from C# Portfolio API backend first
+    card_text = (
+        f"📩 <b>Portfolio Veb-Sayti Xabari</b> (<b>{index}/{total}</b>)\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 <b>Xabar ID:</b> #{msg_id}\n"
+        f"👤 <b>F.I.SH / Ism:</b> {clean_html(str(name))}\n"
+        f"📧 <b>Email:</b> {clean_html(str(email))}\n"
+        f"📞 <b>Telefon:</b> {clean_html(str(phone))}\n"
+        f"🆔 <b>Telegram ID:</b> {tg_str}\n"
+        f"🌐 <b>IP Manzili:</b> {clean_html(str(ip_addr))}\n"
+        f"📊 <b>Holati:</b> {clean_html(str(status))}\n"
+        f"⏰ <b>Vaqti:</b> {clean_html(str(sent_at))}\n"
+        f"📌 <b>Mavzu:</b> {clean_html(str(subject))}\n"
+        f"💬 <b>Xabar matni:</b>\n{clean_html(str(content))}\n"
+        f"━━━━━━━━━━━━━━━━━━━"
+    )
+
+    nav_row = []
+    if index > 1:
+        nav_row.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"port_page:{index - 2}"))
+    nav_row.append(InlineKeyboardButton(text=f"📄 {index}/{total}", callback_data="noop"))
+    if index < total:
+        nav_row.append(InlineKeyboardButton(text="Keyingi ➡️", callback_data=f"port_page:{index}"))
+
+    buttons = [nav_row, [InlineKeyboardButton(text="🔄 Yangilash", callback_data="port_page:0")]]
+    return card_text, InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def check_and_notify_new_portfolio_messages(bot) -> None:
+    """
+    Checks portfolio API backend for new messages, saves them into PostgreSQL,
+    and immediately sends a push notification to all admins in ADMIN_IDS for new messages.
+    """
     try:
         import aiohttp
         async with aiohttp.ClientSession() as session:
@@ -40,14 +77,78 @@ async def cmd_portfolio_messages(message: Message):
                 "http://localhost:5056/api/contact",
                 timeout=aiohttp.ClientTimeout(total=3),
             ) as resp:
-                if resp.status == 200:
-                    messages_list = await resp.json()
-    except Exception as e:
-        logger.warning(f"Could not fetch portfolio messages from API: {e}")
+                if resp.status != 200:
+                    return
+                api_messages = await resp.json()
+                if not isinstance(api_messages, list):
+                    return
 
-    # Fallback to PostgreSQL
-    if not messages_list:
-        messages_list = await get_portfolio_messages(limit=100)
+                for msg in api_messages:
+                    name = msg.get("name") or msg.get("Name") or msg.get("fullName") or "Noma'lum"
+                    email = msg.get("email") or msg.get("Email") or ""
+                    phone = msg.get("phone") or msg.get("Phone") or msg.get("tel")
+                    subject = msg.get("subject") or msg.get("Subject") or "Mavzuga ega emas"
+                    content = msg.get("message") or msg.get("Message") or msg.get("content") or ""
+                    ip_addr = msg.get("ip_address") or msg.get("ipAddress") or msg.get("ip")
+                    status = msg.get("status") or msg.get("Status") or "new"
+                    tg_id = msg.get("telegram_id") or msg.get("telegramId") or msg.get("tgId")
+
+                    is_new = await upsert_portfolio_message(
+                        name=name,
+                        email=email,
+                        subject=subject,
+                        message=content,
+                        phone=phone,
+                        ip_address=ip_addr,
+                        status=status,
+                        telegram_id=int(tg_id) if tg_id and str(tg_id).isdigit() else None,
+                    )
+
+                    if is_new and bot:
+                        # Send immediate Telegram notification to all admins
+                        tg_str = f"<code>{tg_id}</code> (<a href='tg://user?id={tg_id}'>Profil</a>)" if tg_id else "-"
+                        notify_text = (
+                            f"🔔 <b>YANGI PORTFOLIO XABARI KELDI!</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"👤 <b>F.I.SH / Ism:</b> {clean_html(str(name))}\n"
+                            f"📧 <b>Email:</b> {clean_html(str(email))}\n"
+                            f"📞 <b>Telefon:</b> {clean_html(str(phone))}\n"
+                            f"🆔 <b>Telegram ID:</b> {tg_str}\n"
+                            f"🌐 <b>IP Manzili:</b> {clean_html(str(ip_addr))}\n"
+                            f"📌 <b>Mavzu:</b> {clean_html(str(subject))}\n"
+                            f"💬 <b>Xabar matni:</b>\n{clean_html(str(content))}\n"
+                            f"━━━━━━━━━━━━━━━━━━━"
+                        )
+                        for admin_id in ADMIN_IDS:
+                            try:
+                                await bot.send_message(admin_id, notify_text, parse_mode="HTML")
+                            except Exception as notify_err:
+                                logger.warning(f"Could not notify admin {admin_id}: {notify_err}")
+
+    except Exception as e:
+        logger.debug(f"Portfolio watcher sync info: {e}")
+
+
+async def _fetch_portfolio_messages(bot=None) -> list[dict]:
+    """
+    Fetches portfolio messages from C# API (if available), syncs them into PostgreSQL,
+    notifies admins if new, and returns ALL stored messages from PostgreSQL (from ID #1 up to N).
+    """
+    if bot:
+        await check_and_notify_new_portfolio_messages(bot)
+
+    # Fetch ALL stored messages from PostgreSQL (ordered by ID 1 to infinity)
+    db_messages = await get_portfolio_messages(limit=10000)
+    return db_messages
+
+
+@router.message(F.text == "📩 Portfolio xabarlari")
+@router.message(Command("portfolio"))
+async def cmd_portfolio_messages(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    messages_list = await _fetch_portfolio_messages(bot=message.bot)
 
     if not messages_list:
         await message.answer(
@@ -56,31 +157,90 @@ async def cmd_portfolio_messages(message: Message):
         )
         return
 
-    intro_header = (
-        f"📩 <b>Portfolio Veb-saytidan Kelgan Barcha Xabarlar "
-        f"(Jami: {len(messages_list)} ta):</b>"
-    )
-    await message.answer(intro_header, parse_mode="HTML")
+    # Render first message card instantly with pagination
+    card_text, reply_markup = _format_portfolio_card(messages_list[0], 1, len(messages_list))
+    await message.answer(card_text, reply_markup=reply_markup, parse_mode="HTML")
 
-    for idx, msg in enumerate(messages_list, 1):
-        msg_id   = msg.get("id") or msg.get("Id") or idx
-        name     = msg.get("name")    or msg.get("Name")    or "Noma'lum"
-        email    = msg.get("email")   or msg.get("Email")   or "-"
-        subject  = msg.get("subject") or msg.get("Subject") or "Mavzuga ega emas"
-        content  = msg.get("message") or msg.get("Message") or "-"
-        sent_at  = msg.get("sentAt")  or msg.get("created_at") or "-"
 
-        card_text = (
-            f"🆔 <b>ID: #{msg_id}</b>\n"
-            f"👤 <b>Ism:</b> {clean_html(name)}\n"
-            f"📧 <b>Email:</b> {clean_html(email)}\n"
-            f"📌 <b>Mavzu:</b> {clean_html(subject)}\n"
-            f"💬 <b>Xabar:</b>\n{clean_html(content)}\n\n"
-            f"⏰ <b>Vaqt:</b> {clean_html(str(sent_at))}\n"
-            f"━━━━━━━━━━━━━━━━━━━"
+@router.callback_query(F.data.startswith("port_page:"))
+async def cb_portfolio_page(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Kirish taqiqlangan", show_alert=True)
+        return
+
+    page_idx = int(callback.data.split(":")[1])
+    messages_list = await _fetch_portfolio_messages(bot=callback.bot)
+
+    if not messages_list:
+        await callback.answer("Xabarlar topilmadi", show_alert=True)
+        return
+
+    page_idx = max(0, min(page_idx, len(messages_list) - 1))
+    card_text, reply_markup = _format_portfolio_card(messages_list[page_idx], page_idx + 1, len(messages_list))
+
+    await callback.answer()
+    try:
+        await callback.message.edit_text(card_text, reply_markup=reply_markup, parse_mode="HTML")
+    except Exception:
+        pass
+
+
+@router.message(F.text.contains("Yangi Portfolio Aloqa Xabari"))
+async def auto_save_incoming_portfolio_notification(message: Message):
+    """
+    Catches incoming notifications sent by the C# Portfolio backend to Telegram,
+    parses Name, Email, Subject, Message, and automatically saves them into PostgreSQL database.
+    """
+    text = message.text or ""
+    try:
+        import re
+        name_match = re.search(r"Ism:\s*(.*?)(?=\n|$)", text)
+        name = name_match.group(1).strip() if name_match else "Noma'lum"
+
+        email_match = re.search(r"Email:\s*(.*?)(?=\n|$)", text)
+        email = email_match.group(1).strip() if email_match else ""
+
+        subject_match = re.search(r"Mavzu:\s*(.*?)(?=\n|$)", text)
+        subject = subject_match.group(1).strip() if subject_match else "Mavzuga ega emas"
+
+        msg_match = re.search(r"Xabar:\s*\n?(.*?)(?=\n⏰|\n⚡|\n👤|\n📧|\n📌|$)", text, re.DOTALL)
+        content = msg_match.group(1).strip() if msg_match else text
+
+        await upsert_portfolio_message(
+            name=name,
+            email=email,
+            subject=subject,
+            message=content,
+            status="yangi",
         )
-        await message.answer(card_text, parse_mode="HTML")
-        await asyncio.sleep(0.05)
+        logger.info(f"Auto-saved portfolio notification to PostgreSQL: {name} ({email})")
+    except Exception as e:
+        logger.error(f"Error auto-saving portfolio notification: {e}")
+
+
+@router.message(Command("addtestmessage"))
+async def cmd_add_test_message(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    user = message.from_user
+    from database.db import save_portfolio_message
+    await save_portfolio_message(
+        name=user.full_name,
+        email="client@portfolio.uz",
+        phone="+998991234567",
+        subject="Portfolio Hamkorlik Taklifi",
+        message="Assalomu alaykum Asilbek! Veb-saytingiz orqali bog'lanmoqdaman. Yangi loyiha bo'yicha gaplashsak bo'ladimi?",
+        ip_address="127.0.0.1",
+        status="yangi",
+        telegram_id=user.id,
+    )
+
+    await message.answer(
+        "✅ <b>Test portfolio xabari PostgreSQL bazasiga muvaffaqiyatli saqlandi!</b>\n\n"
+        "Endi <b>📩 Portfolio xabarlari</b> tugmasini bosing — barcha xabarlar ID #1 dan boshlab ko'rsatiladi!",
+        parse_mode="HTML",
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

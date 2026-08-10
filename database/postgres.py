@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 _pool: asyncpg.Pool | None = None
 
 
-async def init_pool(min_size: int = 2, max_size: int = 10) -> asyncpg.Pool:
+async def init_pool(min_size: int = 5, max_size: int = 20) -> asyncpg.Pool:
     """
     Creates the global asyncpg connection pool.
     Call once at application startup in bot.py.
@@ -163,13 +163,23 @@ async def init_db_schema() -> None:
             # ─── Portfolio messages ──────────────────────────────────────────
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS portfolio_messages (
-                    id         BIGSERIAL PRIMARY KEY,
-                    name       TEXT,
-                    email      TEXT,
-                    subject    TEXT,
-                    message    TEXT,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
+                    id          BIGSERIAL PRIMARY KEY,
+                    name        TEXT,
+                    email       TEXT,
+                    phone       TEXT,
+                    subject     TEXT,
+                    message     TEXT,
+                    ip_address  TEXT,
+                    status      TEXT    DEFAULT 'new',
+                    telegram_id BIGINT,
+                    created_at  TIMESTAMPTZ DEFAULT NOW()
                 )
+            """)
+            await conn.execute("""
+                ALTER TABLE portfolio_messages ADD COLUMN IF NOT EXISTS phone TEXT;
+                ALTER TABLE portfolio_messages ADD COLUMN IF NOT EXISTS ip_address TEXT;
+                ALTER TABLE portfolio_messages ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'new';
+                ALTER TABLE portfolio_messages ADD COLUMN IF NOT EXISTS telegram_id BIGINT;
             """)
 
             # ─── Indexes ──────────────────────────────────────────────────────
@@ -229,6 +239,16 @@ async def init_db_schema() -> None:
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_favorites_music_id
                 ON favorites (music_id)
+            """)
+
+            # Portfolio messages
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_portfolio_messages_created_at
+                ON portfolio_messages (created_at DESC)
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_portfolio_messages_lookup
+                ON portfolio_messages (name, email)
             """)
 
     logger.info("Database schema initialized successfully (all tables and indexes ready).")
