@@ -107,10 +107,19 @@ async def handle_instagram_link(message: Message):
                         )
 
                 if media_group:
-                    await message.answer_media_group(media=media_group)
+                    try:
+                        await message.answer_media_group(media=media_group)
+                    except Exception as send_err:
+                        logger.error(f"Telegram media group send error: {send_err}")
+                        await status_msg.edit_text(
+                            "⚠️ <b>Fayl hajmi juda kattaligi sababli Telegram orqali yuborib bo'lmadi.</b>",
+                            parse_mode="HTML",
+                        )
+                        safe_remove_files(*all_files_to_clean)
+                        return
                 else:
                     await status_msg.edit_text(
-                        "⚠️ <b>Fayl hajmi 50 MB dan katta bo'lgani uchun Telegram orqali yuborib bo'lmadi.</b>",
+                        "⚠️ <b>Fayl hajmi 200 MB dan katta bo'lgani uchun Telegram orqali yuborib bo'lmadi.</b>",
                         parse_mode="HTML",
                     )
 
@@ -121,21 +130,30 @@ async def handle_instagram_link(message: Message):
                 if not is_valid:
                     await status_msg.edit_text(
                         f"⚠️ <b>Video hajmi juda katta ({size_mb} MB). "
-                        f"Telegram botlar maksimal 50 MB yuklay oladi.</b>",
+                        f"Maksimal 200 MB ruxsat berilgan.</b>",
                         parse_mode="HTML",
                     )
                     safe_remove_files(*all_files_to_clean)
                     return
 
                 video_input = FSInputFile(filepath)
-                sent_msg = await message.answer_video(
-                    video=video_input,
-                    caption=caption,
-                    reply_markup=get_media_inline_keyboard(),
-                    parse_mode="HTML",
-                )
-                if sent_msg and sent_msg.video:
-                    await save_cached_media(url, sent_msg.video.file_id, "video", caption)
+                try:
+                    sent_msg = await message.answer_video(
+                        video=video_input,
+                        caption=caption,
+                        reply_markup=get_media_inline_keyboard(),
+                        parse_mode="HTML",
+                    )
+                    if sent_msg and sent_msg.video:
+                        await save_cached_media(url, sent_msg.video.file_id, "video", caption)
+                except Exception as send_err:
+                    logger.error(f"Telegram video send error: {send_err}")
+                    await status_msg.edit_text(
+                        f"⚠️ <b>Video hajmi ({size_mb} MB) Telegram serveri cheklovidan yuqori bo'lgani sababli yuborib bo'lmadi.</b>",
+                        parse_mode="HTML",
+                    )
+                    safe_remove_files(*all_files_to_clean)
+                    return
 
             else:  # photo
                 filepath = media_data["filepath"]
@@ -161,6 +179,7 @@ async def handle_instagram_link(message: Message):
                 "Havola to'g'riligini tekshiring yoki birozdan keyin qayta urinib ko'ring.",
                 parse_mode="HTML",
             )
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

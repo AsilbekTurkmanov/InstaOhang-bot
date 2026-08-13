@@ -58,7 +58,8 @@ def get_yt_dlp_options(extra_opts: dict | None = None) -> dict:
     Builds yt-dlp options with a single consistent User-Agent.
     HTTPS certificate verification is ENABLED (no nocheckcertificate).
     """
-    ffmpeg_dir = BIN_DIR if (os.name == "nt" and os.path.exists(FFMPEG_PATH)) else None
+    ffmpeg_bin = FFMPEG_PATH if (FFMPEG_PATH and os.path.exists(FFMPEG_PATH)) else None
+    ffmpeg_dir = BIN_DIR if (os.name == "nt" and os.path.exists(FFMPEG_PATH)) else (os.path.dirname(ffmpeg_bin) if ffmpeg_bin else None)
     ua = _get_user_agent()   # single UA for this call — used consistently below
 
     opts: dict = {
@@ -73,6 +74,7 @@ def get_yt_dlp_options(extra_opts: dict | None = None) -> dict:
         "buffersize": 1048576,
         "http_chunk_size": 10485760,
         "noplaylist": True,
+        "max_filesize": 200 * 1024 * 1024,
         # Single User-Agent used consistently in both places
         "user_agent": ua,
         "http_headers": {
@@ -88,6 +90,8 @@ def get_yt_dlp_options(extra_opts: dict | None = None) -> dict:
     }
     if ffmpeg_dir:
         opts["ffmpeg_location"] = ffmpeg_dir
+    elif ffmpeg_bin:
+        opts["ffmpeg_location"] = ffmpeg_bin
     if extra_opts:
         opts.update(extra_opts)
     return opts
@@ -305,6 +309,57 @@ async def download_music_by_id(video_id: str) -> dict:
         )
 
 
+def _ensure_mp3_file(unique_id: str) -> str:
+    """
+    Locates any downloaded file matching music_{unique_id}.* in DOWNLOAD_DIR.
+    Ensures a valid MP3 output file exists via FFmpeg fallback if needed.
+    """
+    prefix = f"music_{unique_id}"
+    mp3_path = os.path.join(DOWNLOAD_DIR, f"{prefix}.mp3")
+
+    if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
+        return mp3_path
+
+    found_path = None
+    for f in os.listdir(DOWNLOAD_DIR):
+        if f.startswith(prefix):
+            full_p = os.path.join(DOWNLOAD_DIR, f)
+            if os.path.isfile(full_p) and os.path.getsize(full_p) > 0:
+                found_path = full_p
+                if f.endswith(".mp3"):
+                    return full_p
+                break
+
+    if not found_path:
+        raise RuntimeError("Musiqa audio fayli yuklanmadi.")
+
+    # Convert found_path (e.g. .m4a, .webm, .opus, .mp4) to .mp3 using FFmpeg
+    try:
+        from services.ffmpeg_service import get_ffmpeg_bin
+        import subprocess
+
+        ffmpeg_bin = get_ffmpeg_bin()
+        cmd = [
+            ffmpeg_bin, "-y", "-i", found_path,
+            "-vn", "-acodec", "libmp3lame", "-ab", "192k", "-ar", "44100",
+            mp3_path,
+        ]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        if res.returncode == 0 and os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
+            try:
+                os.remove(found_path)
+            except Exception:
+                pass
+            return mp3_path
+    except Exception as conv_err:
+        logger.warning(f"FFmpeg MP3 fallback conversion error: {conv_err}")
+
+    if os.path.exists(found_path):
+        return found_path
+
+    raise RuntimeError("MP3 audio faylini yaratishda xatolik yuz berdi.")
+
+
 def _do_music_download(video_id: str) -> dict:
     """Blocking MP3 download (runs in thread pool)."""
     unique_id = str(uuid.uuid4())[:8]
@@ -312,7 +367,7 @@ def _do_music_download(video_id: str) -> dict:
     url = f"https://www.youtube.com/watch?v={video_id}"
 
     opts = get_yt_dlp_options({
-        "format": "bestaudio/best",
+        "format": "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best",
         "outtmpl": output_template,
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
@@ -350,16 +405,8 @@ def _do_music_download(video_id: str) -> dict:
     uploader = info.get("uploader") or info.get("channel") or "Unknown Artist"
     duration = info.get("duration", 0)
 
-    # Find the generated MP3 file
-    file_mp3 = os.path.join(DOWNLOAD_DIR, f"music_{unique_id}.mp3")
-    if not os.path.exists(file_mp3):
-        for f in os.listdir(DOWNLOAD_DIR):
-            if f.startswith(f"music_{unique_id}") and f.endswith(".mp3"):
-                file_mp3 = os.path.join(DOWNLOAD_DIR, f)
-                break
-
-    if not os.path.exists(file_mp3):
-        raise RuntimeError("MP3 audio faylini yaratishda xatolik yuz berdi.")
+    # Locate generated file & guarantee MP3 format
+    file_mp3 = _ensure_mp3_file(unique_id)
 
     return {
         "filepath": file_mp3,
@@ -384,7 +431,7 @@ def _do_search_and_download(query: str) -> dict:
     output_template = os.path.join(DOWNLOAD_DIR, f"music_{unique_id}.%(ext)s")
 
     opts = get_yt_dlp_options({
-        "format": "bestaudio/best",
+        "format": "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best",
         "outtmpl": output_template,
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
@@ -401,7 +448,7 @@ def _do_search_and_download(query: str) -> dict:
             title = entry.get("title", query)
             uploader = entry.get("uploader", "Unknown Artist")
             duration = entry.get("duration", 0)
-            file_mp3 = os.path.join(DOWNLOAD_DIR, f"music_{unique_id}.mp3")
+            file_mp3 = _ensure_mp3_file(unique_id)
             return {
                 "filepath": file_mp3,
                 "title": title,
@@ -409,6 +456,7 @@ def _do_search_and_download(query: str) -> dict:
                 "duration": int(duration),
             }
         raise RuntimeError("Musiqa topilmadi.")
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

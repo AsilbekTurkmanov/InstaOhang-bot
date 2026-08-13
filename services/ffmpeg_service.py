@@ -87,22 +87,41 @@ async def convert_to_round_video(input_path: str, output_path: str | None = None
     Converts a standard video to Telegram 1:1 circular Video Note (MP4).
     Crops to center square, resizes to 640x640. Max 60 seconds.
     Timeout: FFMPEG_TIMEOUT_SEC. Concurrency: FFMPEG_SEMAPHORE.
+    Handles silent videos and audio streams gracefully.
     """
     if not output_path:
         base = os.path.splitext(input_path)[0]
         output_path = f"{base}_round.mp4"
 
+    # Primary attempt: map video and optional audio
     args = [
         "-y", "-threads", "0",
         "-i", input_path,
-        "-vf", "crop='min(iw,ih)':'min(iw,ih)',scale=640:640",
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-vf", "crop='min(iw,ih)':'min(iw,ih)',scale=640:640,setsar=1",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24",
         "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
         "-pix_fmt", "yuv420p",
         "-t", "60",
         output_path,
     ]
-    await _run_ffmpeg(args, "convert_to_round_video")
+    try:
+        await _run_ffmpeg(args, "convert_to_round_video")
+    except RuntimeError as primary_err:
+        logger.warning(f"[FFmpeg] Primary round conversion failed ({primary_err}), trying video-only fallback...")
+        # Fallback: force video-only without audio mapping if audio encoding failed
+        fallback_args = [
+            "-y", "-threads", "0",
+            "-i", input_path,
+            "-an",
+            "-vf", "crop='min(iw,ih)':'min(iw,ih)',scale=640:640,setsar=1",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24",
+            "-pix_fmt", "yuv420p",
+            "-t", "60",
+            output_path,
+        ]
+        await _run_ffmpeg(fallback_args, "convert_to_round_video_fallback")
+
     return output_path
 
 

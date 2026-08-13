@@ -31,7 +31,7 @@ ADMIN_IDS = [int(x.strip()) for x in raw_admin_ids.split(",") if x.strip().isdig
 # ─────────────────────────────────────────────
 # Limits & Safeguards
 # ─────────────────────────────────────────────
-MAX_FILE_SIZE_MB = 50
+MAX_FILE_SIZE_MB = 200
 
 # ─────────────────────────────────────────────
 # Directory Paths

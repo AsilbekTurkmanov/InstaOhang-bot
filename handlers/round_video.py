@@ -17,9 +17,9 @@ async def cmd_round(message: Message):
     """
     target_msg = message.reply_to_message if message.reply_to_message else message
     
-    # Check if target message has a video or video note
-    video = target_msg.video or target_msg.animation or target_msg.document
-    if not video or (target_msg.document and not target_msg.document.mime_type.startswith("video/")):
+    # Check if target message has a video, animation, document or video note
+    video = target_msg.video or target_msg.animation or target_msg.video_note or target_msg.document
+    if not video or (target_msg.document and not (target_msg.document.mime_type and target_msg.document.mime_type.startswith("video/"))):
         await message.answer(
             "⚠️ <b>Iltimos, dumaloq video qilish uchun biror bir videoga javob (reply/otvetit) bergan holda <code>/round</code> deb yozing!</b>",
             parse_mode="HTML"

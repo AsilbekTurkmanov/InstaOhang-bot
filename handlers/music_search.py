@@ -148,11 +148,12 @@ async def cb_download_music(callback: CallbackQuery):
         if not is_valid:
             await status_msg.edit_text(
                 f"⚠️ <b>Audio hajmi juda katta ({size_mb} MB). "
-                f"Telegram botlar maksimal 50 MB yuklay oladi.</b>",
+                f"Maksimal 200 MB ruxsat berilgan.</b>",
                 parse_mode="HTML",
             )
             safe_remove_files(mp3_path)
             return
+
 
         audio_file = FSInputFile(mp3_path)
         sent_audio = await callback.message.answer_audio(
