@@ -252,6 +252,7 @@ def _do_instagram_download(url: str) -> dict:
 async def search_music_results(query: str, max_results: int = 10) -> list:
     """
     Searches YouTube for up to max_results songs (metadata only, fast).
+    Uses android/ios primary player clients and tvhtml5/mweb fallback to bypass bot checks.
     Timeout: 30 seconds.
     """
     def _search() -> list:
@@ -262,39 +263,74 @@ async def search_music_results(query: str, max_results: int = 10) -> list:
             "skip_download": True,
             "user_agent": ua,
             "http_headers": {"User-Agent": ua},
-            "socket_timeout": 15,
+            "socket_timeout": 12,
+            "nocheckcertificate": True,
+            "geo_bypass": True,
             "extractor_args": {
-                "youtube": {"player_client": ["mweb", "android", "ios", "web"]}
+                "youtube": {"player_client": ["android", "ios"]}
             },
         }
         search_query = f"ytsearch{max_results}:{query}"
-        with yt_dlp.YoutubeDL(opts) as ytdl:
-            info = ytdl.extract_info(search_query, download=False)
-            results = []
-            if info and "entries" in info and info["entries"]:
-                for entry in info["entries"]:
-                    if not entry:
-                        continue
-                    video_id = entry.get("id")
-                    if not video_id:
-                        continue
-                    title = entry.get("title") or query
-                    uploader = entry.get("uploader") or entry.get("channel") or "Unknown Artist"
-                    duration = entry.get("duration") or 0
-                    mins, secs = divmod(int(duration), 60)
-                    results.append({
-                        "id": video_id,
-                        "title": title,
-                        "performer": uploader,
-                        "duration": int(duration),
-                        "duration_str": f"{mins:02d}:{secs:02d}",
-                    })
-            return results
+        results = []
+        try:
+            with yt_dlp.YoutubeDL(opts) as ytdl:
+                info = ytdl.extract_info(search_query, download=False)
+                if info and "entries" in info and info["entries"]:
+                    for entry in info["entries"]:
+                        if not entry:
+                            continue
+                        video_id = entry.get("id")
+                        if not video_id:
+                            continue
+                        title = entry.get("title") or query
+                        uploader = entry.get("uploader") or entry.get("channel") or "Unknown Artist"
+                        duration = entry.get("duration") or 0
+                        mins, secs = divmod(int(duration), 60)
+                        results.append({
+                            "id": video_id,
+                            "title": title,
+                            "performer": uploader,
+                            "duration": int(duration),
+                            "duration_str": f"{mins:02d}:{secs:02d}",
+                        })
+                    if results:
+                        return results
+        except Exception as err1:
+            logger.warning(f"[Music Search] Primary search failed ({err1}), trying fallback player clients...")
+
+        # Fallback search using tvhtml5 & mweb
+        opts["extractor_args"] = {"youtube": {"player_client": ["tvhtml5", "mweb"]}}
+        try:
+            with yt_dlp.YoutubeDL(opts) as ytdl:
+                info = ytdl.extract_info(search_query, download=False)
+                if info and "entries" in info and info["entries"]:
+                    for entry in info["entries"]:
+                        if not entry:
+                            continue
+                        video_id = entry.get("id")
+                        if not video_id:
+                            continue
+                        title = entry.get("title") or query
+                        uploader = entry.get("uploader") or entry.get("channel") or "Unknown Artist"
+                        duration = entry.get("duration") or 0
+                        mins, secs = divmod(int(duration), 60)
+                        results.append({
+                            "id": video_id,
+                            "title": title,
+                            "performer": uploader,
+                            "duration": int(duration),
+                            "duration_str": f"{mins:02d}:{secs:02d}",
+                        })
+        except Exception as err2:
+            logger.error(f"[Music Search] Fallback search failed: {err2}")
+
+        return results
 
     return await asyncio.wait_for(
         asyncio.to_thread(_search),
         timeout=30,
     )
+
 
 
 async def download_music_by_id(video_id: str) -> dict:
