@@ -3,7 +3,7 @@ version: '3.8'
 services:
   db:
     image: postgres:16-alpine
-    container_name: instaohang_db
+    container_name: instaohang_app_db
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -22,10 +22,8 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: instaohang_redis
+    container_name: instaohang_app_redis
     restart: always
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -37,7 +35,7 @@ services:
 
   bot:
     build: .
-    container_name: instaohang_bot
+    container_name: instaohang_app_bot
     restart: always
     depends_on:
       db:
