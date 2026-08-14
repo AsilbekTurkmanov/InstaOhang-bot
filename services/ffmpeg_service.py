@@ -1,79 +1,43 @@
-"""
-FFmpeg service for @InstaOhang_bot.
-All operations are async subprocess — no blocking.
+"""Async FFmpeg service with bounded concurrency and safe fallbacks."""
 
-Key features:
-- Global asyncio.Semaphore limits parallel FFmpeg processes (default: 3)
-- Per-operation timeout (default: 120s) — process killed on timeout
-- Temp files cleaned up on ALL exit paths (success, error, timeout)
-- Stderr captured and logged; user never sees raw FFmpeg output
-"""
-
-import os
 import asyncio
 import logging
+import os
 import shutil
-from config import FFMPEG_PATH, DOWNLOAD_DIR
+
+from config import DOWNLOAD_DIR, FFMPEG_PATH
 
 logger = logging.getLogger(__name__)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Global concurrency limit — prevents CPU/disk exhaustion under load
-# ─────────────────────────────────────────────────────────────────────────────
-FFMPEG_SEMAPHORE = asyncio.Semaphore(3)   # max 3 simultaneous FFmpeg processes
-FFMPEG_TIMEOUT_SEC = 180                  # 3 minutes per operation
+FFMPEG_SEMAPHORE = asyncio.Semaphore(3)
+FFMPEG_TIMEOUT_SEC = 180
 
 
 def get_ffmpeg_bin() -> str:
     if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
         return FFMPEG_PATH
-    sys_ffmpeg = shutil.which("ffmpeg")
-    if sys_ffmpeg:
-        return sys_ffmpeg
-    return "ffmpeg"
+    return shutil.which("ffmpeg") or "ffmpeg"
 
 
 async def _run_ffmpeg(args: list[str], operation: str = "ffmpeg") -> None:
-    """
-    Runs FFmpeg with a timeout and concurrency limit.
-    Raises RuntimeError with a safe user message on failure.
-    Process is always properly killed/cleaned up.
-    """
-    ffmpeg_bin = get_ffmpeg_bin()
     proc = None
     async with FFMPEG_SEMAPHORE:
         try:
             proc = await asyncio.create_subprocess_exec(
-                ffmpeg_bin, *args,
+                get_ffmpeg_bin(), *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(),
-                    timeout=FFMPEG_TIMEOUT_SEC,
-                )
-            except asyncio.TimeoutError:
-                logger.error(f"[FFmpeg] {operation} timed out after {FFMPEG_TIMEOUT_SEC}s — killing process")
+                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=FFMPEG_TIMEOUT_SEC)
+            except asyncio.TimeoutError as exc:
                 proc.kill()
-                try:
-                    await proc.wait()
-                except Exception:
-                    pass
-                raise RuntimeError(f"{operation}: vaqt tugadi (>{FFMPEG_TIMEOUT_SEC}s). Fayl juda katta bo'lishi mumkin.")
-
+                await proc.wait()
+                raise RuntimeError(f"{operation}: vaqt tugadi.") from exc
             if proc.returncode != 0:
-                err_msg = stderr.decode("utf-8", errors="ignore")[-500:]  # last 500 chars
-                logger.error(f"[FFmpeg] {operation} failed (rc={proc.returncode}): {err_msg}")
+                detail = stderr.decode("utf-8", errors="ignore")[-500:]
+                logger.error("FFmpeg %s failed: %s", operation, detail)
                 raise RuntimeError(f"{operation}: FFmpeg xatosi yuz berdi.")
-
-        except RuntimeError:
-            raise
-        except Exception as exc:
-            logger.error(f"[FFmpeg] {operation} unexpected error: {exc}")
-            raise RuntimeError(f"{operation}: kutilmagan xato.")
         finally:
-            # Ensure process is cleaned up even if something weird happened
             if proc and proc.returncode is None:
                 try:
                     proc.kill()
@@ -83,92 +47,61 @@ async def _run_ffmpeg(args: list[str], operation: str = "ffmpeg") -> None:
 
 
 async def convert_to_round_video(input_path: str, output_path: str | None = None) -> str:
-    """
-    Converts a standard video to Telegram 1:1 circular Video Note (MP4).
-    Crops to center square, resizes to 640x640. Max 60 seconds.
-    Timeout: FFMPEG_TIMEOUT_SEC. Concurrency: FFMPEG_SEMAPHORE.
-    Handles silent videos and audio streams gracefully.
-    """
     if not output_path:
-        base = os.path.splitext(input_path)[0]
-        output_path = f"{base}_round.mp4"
-
-    # Primary attempt: map video and optional audio
+        output_path = f"{os.path.splitext(input_path)[0]}_round.mp4"
     args = [
-        "-y", "-threads", "0",
-        "-i", input_path,
+        "-y", "-threads", "0", "-i", input_path,
         "-map", "0:v:0", "-map", "0:a:0?",
-        "-vf", "crop='min(iw,ih)':'min(iw,ih)',scale=640:640,setsar=1",
+        "-vf", "crop=min(iw\,ih):min(iw\,ih),scale=640:640,setsar=1",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24",
-        "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
-        "-pix_fmt", "yuv420p",
-        "-t", "60",
-        output_path,
+        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-pix_fmt", "yuv420p",
+        "-t", "60", output_path,
     ]
     try:
         await _run_ffmpeg(args, "convert_to_round_video")
-    except RuntimeError as primary_err:
-        logger.warning(f"[FFmpeg] Primary round conversion failed ({primary_err}), trying video-only fallback...")
-        # Fallback: force video-only without audio mapping if audio encoding failed
-        fallback_args = [
-            "-y", "-threads", "0",
-            "-i", input_path,
-            "-an",
-            "-vf", "crop='min(iw,ih)':'min(iw,ih)',scale=640:640,setsar=1",
+    except RuntimeError:
+        # Silent videos must still become valid Video Notes.
+        fallback = [
+            "-y", "-threads", "0", "-i", input_path, "-an",
+            "-vf", "crop=min(iw\,ih):min(iw\,ih),scale=640:640,setsar=1",
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24",
-            "-pix_fmt", "yuv420p",
-            "-t", "60",
-            output_path,
+            "-pix_fmt", "yuv420p", "-t", "60", output_path,
         ]
-        await _run_ffmpeg(fallback_args, "convert_to_round_video_fallback")
-
+        await _run_ffmpeg(fallback, "convert_to_round_video_fallback")
     return output_path
 
 
 async def extract_audio_from_video(input_path: str, output_mp3_path: str | None = None) -> str:
-    """
-    Extracts high-quality MP3 audio from a video file.
-    Timeout: FFMPEG_TIMEOUT_SEC. Concurrency: FFMPEG_SEMAPHORE.
-    """
     if not output_mp3_path:
-        base = os.path.splitext(input_path)[0]
-        output_mp3_path = f"{base}.mp3"
-
-    args = [
-        "-y", "-threads", "0",
-        "-i", input_path,
-        "-vn",
-        "-acodec", "libmp3lame",
-        "-ab", "192k",
-        "-ar", "44100",
-        output_mp3_path,
-    ]
-    await _run_ffmpeg(args, "extract_audio_from_video")
+        output_mp3_path = f"{os.path.splitext(input_path)[0]}.mp3"
+    await _run_ffmpeg([
+        "-y", "-threads", "0", "-i", input_path, "-vn",
+        "-acodec", "libmp3lame", "-ab", "192k", "-ar", "44100", output_mp3_path,
+    ], "extract_audio_from_video")
     return output_mp3_path
 
 
 async def change_video_speed(input_path: str, speed: float = 1.5, output_path: str | None = None) -> str:
-    """
-    Changes video speed (e.g. 1.5x fast or 0.8x slow).
-    atempo supports 0.5–2.0 range. For values outside this range, chain filters.
-    Timeout: FFMPEG_TIMEOUT_SEC. Concurrency: FFMPEG_SEMAPHORE.
-    """
+    if speed <= 0:
+        raise ValueError("speed must be greater than zero")
     if not output_path:
-        base = os.path.splitext(input_path)[0]
-        output_path = f"{base}_speed_{speed}.mp4"
+        output_path = f"{os.path.splitext(input_path)[0]}_speed_{speed}.mp4"
 
-    pts_val = 1.0 / speed
-
-    # atempo only supports 0.5..2.0 — clamp to safe range
+    pts = 1.0 / speed
     atempo = max(0.5, min(2.0, speed))
-
     args = [
-        "-y", "-threads", "0",
-        "-i", input_path,
-        "-filter_complex", f"[0:v]setpts={pts_val:.4f}*PTS[v];[0:a]atempo={atempo:.2f}[a]",
-        "-map", "[v]", "-map", "[a]",
-        "-c:v", "libx264", "-preset", "ultrafast",
-        output_path,
+        "-y", "-threads", "0", "-i", input_path,
+        "-filter_complex", f"[0:v]setpts={pts:.4f}*PTS[v];[0:a]atempo={atempo:.2f}[a]",
+        "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "ultrafast", output_path,
     ]
-    await _run_ffmpeg(args, "change_video_speed")
+    try:
+        await _run_ffmpeg(args, "change_video_speed")
+    except RuntimeError:
+        # A video may have no audio stream. In that case process video only.
+        fallback = [
+            "-y", "-threads", "0", "-i", input_path,
+            "-an", "-vf", f"setpts={pts:.4f}*PTS",
+            "-c:v", "libx264", "-preset", "ultrafast", output_path,
+        ]
+        await _run_ffmpeg(fallback, "change_video_speed_video_only")
     return output_path
