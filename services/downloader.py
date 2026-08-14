@@ -19,7 +19,7 @@ import asyncio
 import random
 import yt_dlp
 import instaloader
-from config import DOWNLOAD_DIR, FFMPEG_PATH, BIN_DIR
+from config import DOWNLOAD_DIR, FFMPEG_PATH, BIN_DIR, BASE_DIR
 
 logger = logging.getLogger(__name__)
 
