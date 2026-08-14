@@ -406,6 +406,229 @@ async def search_music_results(query: str, max_results: int = 10) -> list:
 
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Invidious — public YouTube proxy (works on datacenter IPs, no bot detection)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Public Invidious instances (rotated for reliability)
+INVIDIOUS_INSTANCES = [
+    "https://invidious.slipfox.xyz",
+    "https://inv.nadeko.net",
+    "https://invidious.nerdvpn.de",
+    "https://iv.melmac.space",
+    "https://invidious.perennialte.ch",
+    "https://yt.artemislena.eu",
+]
+
+
+def _try_invidious_download(video_id: str, unique_id: str) -> dict | None:
+    """
+    Downloads audio via public Invidious API.
+    Invidious proxies YouTube requests — no bot detection on datacenter IPs.
+    Returns dict on success, None on failure.
+    """
+    import urllib.request
+    import json
+    import urllib.parse
+    import subprocess
+
+    mp3_path = os.path.join(DOWNLOAD_DIR, f"music_{unique_id}.mp3")
+    raw_path = os.path.join(DOWNLOAD_DIR, f"music_{unique_id}.raw")
+
+    for instance in INVIDIOUS_INSTANCES:
+        try:
+            # Step 1: Fetch video metadata + audio formats from Invidious API
+            api_url = f"{instance}/api/v1/videos/{video_id}?fields=title,author,lengthSeconds,adaptiveFormats,formatStreams"
+            req = urllib.request.Request(api_url, headers={
+                "User-Agent": "Mozilla/5.0 (compatible; InstaOhangBot/1.0)",
+                "Accept": "application/json",
+            })
+            resp = urllib.request.urlopen(req, timeout=10)
+            data = json.loads(resp.read().decode("utf-8"))
+
+            title = data.get("title", "Music")
+            author = data.get("author", "Unknown Artist")
+            duration = data.get("lengthSeconds", 0)
+
+            # Step 2: Find best audio stream (prefer opus/webm > m4a)
+            audio_url = None
+            best_bitrate = 0
+            for fmt in data.get("adaptiveFormats", []):
+                mime = fmt.get("type", "")
+                if "audio" not in mime:
+                    continue
+                bitrate = int(fmt.get("bitrate", 0))
+                if bitrate > best_bitrate:
+                    best_bitrate = bitrate
+                    # Use proxied URL via Invidious (bypasses geo/bot restrictions)
+                    itag = fmt.get("itag", "")
+                    audio_url = f"{instance}/latest_version?id={video_id}&itag={itag}&local=true"
+
+            # Fallback: try formatStreams
+            if not audio_url:
+                for fmt in data.get("formatStreams", []):
+                    if fmt.get("type", "").startswith("video/mp4"):
+                        itag = fmt.get("itag", "")
+                        audio_url = f"{instance}/latest_version?id={video_id}&itag={itag}&local=true"
+                        break
+
+            if not audio_url:
+                logger.warning(f"[Invidious] No audio URL found from {instance}")
+                continue
+
+            # Step 3: Download raw audio
+            logger.info(f"[Invidious] Downloading from {instance} (bitrate={best_bitrate})")
+            dl_req = urllib.request.Request(audio_url, headers={
+                "User-Agent": "Mozilla/5.0 (compatible; InstaOhangBot/1.0)",
+                "Referer": instance,
+            })
+            with urllib.request.urlopen(dl_req, timeout=120) as audio_resp:
+                with open(raw_path, "wb") as f:
+                    while True:
+                        chunk = audio_resp.read(65536)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+
+            if not os.path.exists(raw_path) or os.path.getsize(raw_path) < 1024:
+                logger.warning(f"[Invidious] Downloaded file too small from {instance}")
+                if os.path.exists(raw_path):
+                    os.remove(raw_path)
+                continue
+
+            # Step 4: Convert to MP3 via FFmpeg
+            from services.ffmpeg_service import get_ffmpeg_bin
+            ffmpeg_bin = get_ffmpeg_bin()
+            cmd = [
+                ffmpeg_bin, "-y", "-i", raw_path,
+                "-vn", "-acodec", "libmp3lame", "-ab", "192k", "-ar", "44100",
+                mp3_path,
+            ]
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+            try:
+                os.remove(raw_path)
+            except Exception:
+                pass
+
+            if res.returncode == 0 and os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
+                logger.info(f"[Invidious] ✅ Success from {instance}: {title}")
+                return {
+                    "filepath": mp3_path,
+                    "title": title,
+                    "performer": author,
+                    "duration": int(duration),
+                }
+            else:
+                logger.warning(f"[Invidious] FFmpeg conversion failed from {instance}: {res.stderr[:200]}")
+
+        except Exception as e:
+            logger.warning(f"[Invidious] Instance {instance} failed: {e}")
+            for p in [raw_path]:
+                if os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
+            continue
+
+    return None
+
+
+def _do_music_download(video_id: str) -> dict:
+    """Blocking MP3 download (runs in thread pool). Multi-stage fallback."""
+    unique_id = str(uuid.uuid4())[:8]
+    output_template = os.path.join(DOWNLOAD_DIR, f"music_{unique_id}.%(ext)s")
+    url = f"https://www.youtube.com/watch?v={video_id}"
+
+    # ── Stage 0: Invidious API (public proxy — works on datacenter IPs) ────
+    try:
+        result = _try_invidious_download(video_id, unique_id)
+        if result:
+            return result
+        logger.warning("[Music] All Invidious instances failed, trying yt-dlp...")
+    except Exception as inv_err:
+        logger.warning(f"[Music] Invidious stage error: {inv_err}")
+
+    # ── yt-dlp stages setup ────────────────────────────────────────────────
+    opts = get_yt_dlp_options({
+        "format": "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best",
+        "outtmpl": output_template,
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
+        }],
+    })
+
+    # Add cookies file if available
+    cookie_path = os.path.join(BASE_DIR, "cookies.txt")
+    if os.path.exists(cookie_path):
+        opts["cookiefile"] = cookie_path
+
+    info = None
+    song_title = None
+    song_performer = None
+
+    # ── Stage 1: android_vr, android, ios player clients ──────────────────
+    opts["extractor_args"] = {"youtube": {"player_client": ["android_vr", "android", "ios"]}}
+    try:
+        with yt_dlp.YoutubeDL(opts) as ytdl:
+            info = ytdl.extract_info(url, download=True)
+    except Exception as primary_err:
+        logger.warning(f"[Music] Stage 1 failed ({primary_err}), trying Stage 2...")
+
+        # ── Stage 2: tvhtml5, mweb, web_embedded ──────────────────────────
+        opts["extractor_args"] = {"youtube": {"player_client": ["tvhtml5", "mweb", "web_embedded"]}}
+        try:
+            with yt_dlp.YoutubeDL(opts) as ytdl:
+                info = ytdl.extract_info(url, download=True)
+        except Exception as fallback_err:
+            logger.warning(f"[Music] Stage 2 failed ({fallback_err}), trying Stage 3 (oEmbed+ytsearch)...")
+
+            # ── Stage 3: oEmbed title fetch + ytsearch1 ───────────────────
+            try:
+                import urllib.request
+                import json
+                oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
+                req = urllib.request.Request(oembed_url, headers={"User-Agent": "Mozilla/5.0"})
+                resp = json.loads(urllib.request.urlopen(req, timeout=5).read().decode("utf-8"))
+                song_title = resp.get("title")
+                song_performer = resp.get("author_name")
+            except Exception as oembed_err:
+                logger.warning(f"[Music] oEmbed error: {oembed_err}")
+
+            target_search = song_title if song_title else video_id
+            try:
+                opts["extractor_args"] = {"youtube": {"player_client": ["android_vr", "android"]}}
+                with yt_dlp.YoutubeDL(opts) as ytdl:
+                    search_res = ytdl.extract_info(f"ytsearch1:{target_search}", download=True)
+                    if search_res and "entries" in search_res and search_res["entries"]:
+                        info = search_res["entries"][0]
+                    else:
+                        raise RuntimeError(f"Musiqani yuklab bo'lmadi: {fallback_err}")
+            except Exception as final_err:
+                logger.error(f"[Music] All download attempts failed: {final_err}")
+                raise RuntimeError("Musiqa yuklanmadi. Qayta urinib ko'ring.")
+
+    if not info:
+        raise RuntimeError("Musiqa ma'lumotlari topilmadi.")
+
+    title = info.get("title") or song_title or "Music"
+    uploader = info.get("uploader") or info.get("channel") or song_performer or "Unknown Artist"
+    duration = info.get("duration", 0)
+
+    # Locate generated file & guarantee MP3 format
+    file_mp3 = _ensure_mp3_file(unique_id)
+
+    return {
+        "filepath": file_mp3,
+        "title": title,
+        "performer": uploader,
+        "duration": int(duration),
+    }
+
+
 async def download_music_by_id(video_id: str) -> dict:
     """
     Downloads YouTube track by video ID as MP3 (async, semaphore-gated).
@@ -416,6 +639,8 @@ async def download_music_by_id(video_id: str) -> dict:
             asyncio.to_thread(_do_music_download, video_id),
             timeout=DOWNLOAD_TIMEOUT_SEC,
         )
+
+
 
 
 def _ensure_mp3_file(unique_id: str) -> str:
