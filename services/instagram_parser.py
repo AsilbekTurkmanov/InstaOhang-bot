@@ -24,27 +24,19 @@ def parse_instagram_url(url: str) -> Optional[ParsedInstagramUrl]:
 
     raw = str(url).strip()
     parsed = urlparse(raw)
-    if parsed.scheme.lower() not in {"http", "https"}:
-        return None
-    if parsed.netloc.lower().split(":", 1)[0] not in {"instagram.com", "www.instagram.com"}:
-        return None
-
-    match = INSTAGRAM_REGEX.fullmatch(raw.rstrip("/"))
-    if not match:
-        return None
-
-    shortcode = match.group(1)
-    if not 3 <= len(shortcode) <= 40:
+    host = parsed.netloc.lower().split(":", 1)[0]
+    if parsed.scheme.lower() not in {"http", "https"} or host not in {"instagram.com", "www.instagram.com"}:
         return None
 
     parts = [p for p in parsed.path.split("/") if p]
-    if len(parts) != 2:
+    if len(parts) != 2 or parts[0].lower() not in {"p", "reel", "reels", "tv"}:
         return None
+
     route = parts[0].lower()
-    if route not in {"p", "reel", "reels", "tv"}:
+    shortcode = parts[1]
+    if not re.fullmatch(r"[A-Za-z0-9_-]{3,40}", shortcode):
         return None
 
     media_type = "reel" if route in {"reel", "reels"} else route
     canonical_url = f"https://www.instagram.com/{route}/{shortcode}/"
-
     return ParsedInstagramUrl(raw, canonical_url, media_type, shortcode)
