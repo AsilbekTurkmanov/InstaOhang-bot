@@ -1,14 +1,12 @@
-"""
-Async Redis integration service for @InstaOhang_bot.
-Provides distributed rate limiting, distributed locks, task caching, and state storage.
-Includes graceful fallback to in-memory primitives if Redis is unavailable.
-"""
+"""Async Redis helpers with safe distributed locks and rate limiting."""
 
-import time
-import logging
 import asyncio
-from typing import Optional, AsyncGenerator
+import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
+from typing import AsyncGenerator, Optional
+
 from config import REDIS_URL
 
 logger = logging.getLogger(__name__)
@@ -19,11 +17,9 @@ _in_memory_rate_limits: dict[str, list[float]] = {}
 
 
 async def init_redis() -> Optional[object]:
-    """Initializes the global Redis connection pool if REDIS_URL is accessible."""
     global _redis_client
     if _redis_client is not None:
         return _redis_client
-
     try:
         import redis.asyncio as aioredis
         client = aioredis.from_url(
@@ -35,108 +31,104 @@ async def init_redis() -> Optional[object]:
         )
         await client.ping()
         _redis_client = client
-        logger.info(f"✅ Redis connection established cleanly ({REDIS_URL})")
-        return _redis_client
-    except Exception as e:
-        logger.warning(f"⚠️ Redis unavailable ({e}). Using in-memory distributed fallback mode.")
+        logger.info("Redis connection established")
+        return client
+    except Exception as exc:
+        logger.warning("Redis unavailable; using local fallback: %s", exc)
         _redis_client = None
         return None
 
 
 async def close_redis() -> None:
-    """Closes global Redis connection pool on bot shutdown."""
     global _redis_client
-    if _redis_client:
+    client = _redis_client
+    _redis_client = None
+    if client:
         try:
-            await _redis_client.close()
-            logger.info("Redis connection pool closed.")
-        except Exception as e:
-            logger.warning(f"Error closing Redis: {e}")
-        finally:
-            _redis_client = None
+            await client.aclose()
+        except Exception as exc:
+            logger.warning("Redis close error: %s", exc)
 
 
 def get_redis() -> Optional[object]:
-    """Returns active Redis client or None if offline."""
     return _redis_client
 
 
 @asynccontextmanager
 async def acquire_lock(lock_name: str, ttl_seconds: int = 60) -> AsyncGenerator[bool, None]:
-    """
-    Distributed lock context manager based on canonical key.
-    Uses Redis `set(name, value, nx=True, ex=ttl)` when available,
-    falling back to in-memory `asyncio.Lock` if Redis is offline.
-    """
+    """Acquire a lock and release only the lock owned by this caller."""
     key = f"lock:{lock_name}"
     client = get_redis()
+    token = uuid.uuid4().hex
     acquired = False
 
     if client:
         try:
-            val = str(time.time())
-            # Attempt to set lock in Redis
-            ok = await client.set(key, val, nx=True, ex=ttl_seconds)
-            if ok:
-                acquired = True
-                yield True
-            else:
-                yield False
+            acquired = bool(await client.set(key, token, nx=True, ex=ttl_seconds))
+            yield acquired
         finally:
-            if acquired and client:
+            if acquired:
                 try:
-                    await client.delete(key)
-                except Exception as e:
-                    logger.debug(f"Redis lock release debug ({key}): {e}")
-    else:
-        # In-memory fallback
-        if key not in _in_memory_locks:
-            _in_memory_locks[key] = asyncio.Lock()
-        lock = _in_memory_locks[key]
+                    # Delete only if the stored token still belongs to us.
+                    await client.eval(
+                        "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+                        1,
+                        key,
+                        token,
+                    )
+                except Exception as exc:
+                    logger.warning("Redis lock release failed for %s: %s", key, exc)
+        return
 
+    lock = _in_memory_locks.setdefault(key, asyncio.Lock())
+    try:
         try:
             acquired = await asyncio.wait_for(lock.acquire(), timeout=0.1)
         except asyncio.TimeoutError:
             acquired = False
-
-        try:
-            yield acquired
-        finally:
-            if acquired and lock.locked():
-                lock.release()
+        yield acquired
+    finally:
+        if acquired and lock.locked():
+            lock.release()
 
 
 async def check_rate_limit(
-    identifier: str, action: str = "general", max_requests: int = 5, window_sec: int = 60
+    identifier: str,
+    action: str = "general",
+    max_requests: int = 5,
+    window_sec: int = 60,
 ) -> tuple[bool, int]:
-    """
-    Distributed sliding window rate limiter.
-    Returns: (is_allowed, remaining_seconds)
-    """
+    """Sliding-window limiter. A rejected request is never added to the window."""
     key = f"rate:{action}:{identifier}"
-    client = get_redis()
     now = time.time()
+    cutoff = now - window_sec
+    client = get_redis()
 
     if client:
         try:
             async with client.pipeline(transaction=True) as pipe:
-                pipe.zremrangebyscore(key, 0, now - window_sec)
+                pipe.zremrangebyscore(key, 0, cutoff)
                 pipe.zcard(key)
-                pipe.zadd(key, {str(now): now})
-                pipe.expire(key, window_sec)
-                results = await pipe.execute()
-            count = results[1]
-            if count >= max_requests:
-                return False, window_sec
-            return True, 0
-        except Exception as e:
-            logger.warning(f"Redis rate limit fallback ({key}): {e}")
+                result = await pipe.execute()
+                count = int(result[1])
+                if count >= max_requests:
+                    oldest = await client.zrange(key, 0, 0, withscores=True)
+                    retry_after = window_sec
+                    if oldest:
+                        retry_after = max(1, int(window_sec - (now - oldest[0][1])))
+                    return False, retry_after
 
-    # In-memory sliding window fallback
+                member = f"{now:.6f}:{uuid.uuid4().hex}"
+                await client.zadd(key, {member: now})
+                await client.expire(key, window_sec)
+                return True, 0
+        except Exception as exc:
+            logger.warning("Redis rate-limit fallback: %s", exc)
+
     timestamps = _in_memory_rate_limits.setdefault(key, [])
-    # Clean old timestamps
-    _in_memory_rate_limits[key] = [t for t in timestamps if now - t < window_sec]
-    if len(_in_memory_rate_limits[key]) >= max_requests:
-        return False, window_sec
-    _in_memory_rate_limits[key].append(now)
+    timestamps[:] = [t for t in timestamps if now - t < window_sec]
+    if len(timestamps) >= max_requests:
+        retry_after = max(1, int(window_sec - (now - timestamps[0])))
+        return False, retry_after
+    timestamps.append(now)
     return True, 0
