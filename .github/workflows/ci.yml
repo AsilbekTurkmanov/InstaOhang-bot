@@ -1,0 +1,75 @@
+name: InstaOhang Bot CI/CD Hardening Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  audit-and-test:
+    name: Code Quality Audit & Test Suite
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: instaohang_test
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+
+      - name: Install System Dependencies (FFmpeg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-asyncio ruff
+          pip install -r requirements.txt
+
+      - name: Syntax & Compilation Audit
+        run: |
+          python -m compileall .
+
+      - name: Ruff Code Quality Check
+        run: |
+          ruff check . --ignore E501,F401,E402
+
+      - name: Run Pytest Test Suite
+        env:
+          BOT_TOKEN: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+          ADMIN_IDS: "5246861200"
+          DATABASE_URL: "postgresql://postgres:test_password@localhost:5432/instaohang_test"
+          REDIS_URL: "redis://localhost:6379/0"
+        run: |
+          pytest -v

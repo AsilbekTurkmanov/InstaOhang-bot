@@ -97,7 +97,7 @@ async def init_db_schema() -> None:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS downloads (
                     id         BIGSERIAL PRIMARY KEY,
-                    user_id    BIGINT NOT NULL,
+                    user_id    BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
                     url        TEXT,
                     type       TEXT,
                     created_at TIMESTAMPTZ DEFAULT NOW()
@@ -153,7 +153,7 @@ async def init_db_schema() -> None:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS favorites (
                     id         BIGSERIAL PRIMARY KEY,
-                    user_id    BIGINT NOT NULL,
+                    user_id    BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
                     music_id   INTEGER NOT NULL REFERENCES music(id) ON DELETE CASCADE,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     UNIQUE (user_id, music_id)
@@ -180,6 +180,39 @@ async def init_db_schema() -> None:
                 ALTER TABLE portfolio_messages ADD COLUMN IF NOT EXISTS ip_address TEXT;
                 ALTER TABLE portfolio_messages ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'new';
                 ALTER TABLE portfolio_messages ADD COLUMN IF NOT EXISTS telegram_id BIGINT;
+            """)
+
+            # ─── AI Conversations & Messages ────────────────────────────────
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS ai_conversations (
+                    id               BIGSERIAL PRIMARY KEY,
+                    telegram_user_id BIGINT UNIQUE NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+                    created_at       TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at       TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS ai_messages (
+                    id              BIGSERIAL PRIMARY KEY,
+                    conversation_id BIGINT NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+                    role            TEXT NOT NULL,
+                    content         TEXT NOT NULL,
+                    created_at      TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+
+            # ─── Media Processing Cache (Audio, Round, Fast, Slow) ─────────
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS media_processing_cache (
+                    id                    BIGSERIAL PRIMARY KEY,
+                    source_file_unique_id TEXT NOT NULL,
+                    operation             TEXT NOT NULL,
+                    telegram_file_id      TEXT NOT NULL,
+                    created_at            TIMESTAMPTZ DEFAULT NOW(),
+                    last_used_at          TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE (source_file_unique_id, operation)
+                )
             """)
 
             # ─── Indexes ──────────────────────────────────────────────────────
@@ -249,6 +282,12 @@ async def init_db_schema() -> None:
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_portfolio_messages_lookup
                 ON portfolio_messages (name, email)
+            """)
+
+            # Processing Cache
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_proc_cache_lookup
+                ON media_processing_cache (source_file_unique_id, operation)
             """)
 
     logger.info("Database schema initialized successfully (all tables and indexes ready).")

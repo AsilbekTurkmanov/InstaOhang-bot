@@ -15,23 +15,45 @@ if not BOT_TOKEN:
     raise ValueError("CRITICAL ERROR: BOT_TOKEN is missing! Please set BOT_TOKEN in .env file.")
 
 # ─────────────────────────────────────────────
-# PostgreSQL Connection
+# PostgreSQL Database URL
 # ─────────────────────────────────────────────
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://postgres:1234@localhost:5432/instaohang"
-)
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+if not DATABASE_URL:
+    raise ValueError("CRITICAL ERROR: DATABASE_URL is missing! Please set DATABASE_URL in .env file.")
 
 # ─────────────────────────────────────────────
 # Admin Telegram IDs
 # ─────────────────────────────────────────────
-raw_admin_ids = os.getenv("ADMIN_IDS", "5246861200")
+raw_admin_ids = os.getenv("ADMIN_IDS", "").strip()
+if not raw_admin_ids:
+    raise ValueError("CRITICAL ERROR: ADMIN_IDS is missing! Please set ADMIN_IDS in .env file.")
+
 ADMIN_IDS = [int(x.strip()) for x in raw_admin_ids.split(",") if x.strip().isdigit()]
 
 # ─────────────────────────────────────────────
-# Limits & Safeguards
+# Redis Connection URL
 # ─────────────────────────────────────────────
-MAX_FILE_SIZE_MB = 200
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0").strip()
+
+# ─────────────────────────────────────────────
+# Limits & Worker Safeguards
+# ─────────────────────────────────────────────
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "200"))
+DOWNLOAD_TIMEOUT = int(os.getenv("DOWNLOAD_TIMEOUT", "300"))
+DOWNLOAD_WORKERS = int(os.getenv("DOWNLOAD_WORKERS", "4"))
+
+# ─────────────────────────────────────────────
+# AI Provider Configuration
+# ─────────────────────────────────────────────
+AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
+AI_MODEL = os.getenv("AI_MODEL", "gpt-4o-mini").strip()
+AI_PROVIDER = os.getenv("AI_PROVIDER", "openai").strip()
+
+# ─────────────────────────────────────────────
+# Portfolio API Integration
+# ─────────────────────────────────────────────
+PORTFOLIO_API_URL = os.getenv("PORTFOLIO_API_URL", "http://localhost:5056/api/contact").strip()
+PORTFOLIO_API_TOKEN = os.getenv("PORTFOLIO_API_TOKEN", "").strip()
 
 # ─────────────────────────────────────────────
 # Directory Paths
@@ -39,9 +61,6 @@ MAX_FILE_SIZE_MB = 200
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
 BIN_DIR = os.path.join(BASE_DIR, "bin")
-
-# Legacy SQLite path (kept for backward compat if needed)
-DB_PATH = os.path.join(BASE_DIR, "database", "insta_ohang.db")
 
 # ─────────────────────────────────────────────
 # Executables (FFmpeg)
@@ -57,4 +76,4 @@ else:
 # Create required directories if not exist
 # ─────────────────────────────────────────────
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+

@@ -18,6 +18,7 @@ from aiogram.types import BotCommand
 
 from config import BOT_TOKEN, ASSISTANT_BOT_TOKEN, BIN_DIR, FFMPEG_PATH
 from database.postgres import init_pool, close_pool, init_db_schema
+from services.redis_service import init_redis, close_redis
 from handlers import start, instagram, round_video, music_search, admin, agent_assistant, favorites
 from utils.middleware import ThrottlingMiddleware
 from utils.helpers import cleanup_old_temp_files
@@ -106,11 +107,12 @@ BOT_SHORT_DESCRIPTION = (
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 async def main():
-    # 1. Initialize PostgreSQL connection pool
-    logger.info("Connecting to PostgreSQL...")
+    # 1. Initialize PostgreSQL connection pool and Redis
+    logger.info("Connecting to PostgreSQL and Redis...")
     try:
         await init_pool(min_size=2, max_size=10)
         await init_db_schema()
+        await init_redis()
         logger.info("PostgreSQL connected and schema ready.")
     except Exception as db_err:
         logger.critical(
@@ -196,8 +198,9 @@ async def main():
                 pass
         for b in bots_to_poll:
             await b.session.close()
+        await close_redis()
         await close_pool()
-        logger.info("Bot stopped. PostgreSQL pool and background tasks closed cleanly.")
+        logger.info("Bot stopped. PostgreSQL pool, Redis, and background tasks closed cleanly.")
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from config import ADMIN_IDS
+from config import ADMIN_IDS, PORTFOLIO_API_URL, PORTFOLIO_API_TOKEN
 from database.db import (
     get_stats, get_all_user_ids,
     add_channel, remove_channel, get_channels,
@@ -70,12 +70,20 @@ async def check_and_notify_new_portfolio_messages(bot) -> None:
     Checks portfolio API backend for new messages, saves them into PostgreSQL,
     and immediately sends a push notification to all admins in ADMIN_IDS for new messages.
     """
+    if not PORTFOLIO_API_URL:
+        return
+
     try:
         import aiohttp
+        headers = {}
+        if PORTFOLIO_API_TOKEN:
+            headers["Authorization"] = f"Bearer {PORTFOLIO_API_TOKEN}"
+
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                "http://localhost:5056/api/contact",
-                timeout=aiohttp.ClientTimeout(total=3),
+                PORTFOLIO_API_URL,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=5),
             ) as resp:
                 if resp.status != 200:
                     return

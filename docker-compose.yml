@@ -20,6 +20,21 @@ services:
       - 8.8.8.8
       - 1.1.1.1
 
+  redis:
+    image: redis:7-alpine
+    container_name: instaohang_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
   bot:
     build: .
     container_name: instaohang_bot
@@ -27,10 +42,13 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file:
       - .env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_password}@db:5432/${POSTGRES_DB:-instaohang}
+      - REDIS_URL=redis://redis:6379/0
     volumes:
       - ./downloads:/app/downloads
     dns:

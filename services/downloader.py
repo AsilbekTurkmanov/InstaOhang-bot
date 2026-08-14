@@ -19,7 +19,10 @@ import asyncio
 import random
 import yt_dlp
 import instaloader
-from config import DOWNLOAD_DIR, FFMPEG_PATH, BIN_DIR, BASE_DIR
+from config import (
+    DOWNLOAD_DIR, FFMPEG_PATH, BIN_DIR, BASE_DIR,
+    MAX_FILE_SIZE_MB, DOWNLOAD_TIMEOUT, DOWNLOAD_WORKERS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +37,15 @@ USER_AGENTS = [
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Concurrency — max simultaneous downloads (Instagram + YouTube combined)
-# Heavy download operations are gated through this semaphore
+# Concurrency — max simultaneous heavy downloads
 # ─────────────────────────────────────────────────────────────────────────────
-DOWNLOAD_SEMAPHORE = asyncio.Semaphore(4)       # max 4 simultaneous downloads
-DOWNLOAD_TIMEOUT_SEC = 300                       # 5 minutes per download
+DOWNLOAD_SEMAPHORE = asyncio.Semaphore(DOWNLOAD_WORKERS)
+DOWNLOAD_TIMEOUT_SEC = DOWNLOAD_TIMEOUT
 
 # ─────────────────────────────────────────────────────────────────────────────
 # In-flight deduplication
 # Maps canonical_url → asyncio.Future so concurrent identical requests
-# share the same download result instead of launching duplicate processes.
+# share the same download task instead of downloading twice
 # ─────────────────────────────────────────────────────────────────────────────
 _IN_FLIGHT: dict[str, asyncio.Future] = {}
 
@@ -74,7 +76,7 @@ def get_yt_dlp_options(extra_opts: dict | None = None) -> dict:
         "buffersize": 1048576,
         "http_chunk_size": 10485760,
         "noplaylist": True,
-        "max_filesize": 200 * 1024 * 1024,
+        "max_filesize": MAX_FILE_SIZE_MB * 1024 * 1024,
         # Single User-Agent used consistently in both places
         "user_agent": ua,
         "http_headers": {

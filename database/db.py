@@ -254,6 +254,55 @@ async def save_cached_media(
         logger.warning(f"save_cached_media error: {e}")
 
 
+async def get_processing_cache(source_file_unique_id: str, operation: str) -> Optional[str]:
+    """
+    Returns cached Telegram file_id for processed media operations (audio, round, fast_1_5, slow_0_8).
+    Updates last_used_at timestamp.
+    """
+    if not source_file_unique_id or not operation:
+        return None
+    pool = get_pool()
+    try:
+        now = datetime.now(timezone.utc)
+        async with pool.acquire() as conn:
+            file_id = await conn.fetchval(
+                """
+                UPDATE media_processing_cache
+                SET last_used_at = $3
+                WHERE source_file_unique_id = $1 AND operation = $2
+                RETURNING telegram_file_id
+                """,
+                source_file_unique_id, operation, now,
+            )
+        return file_id
+    except Exception as e:
+        logger.warning(f"get_processing_cache error: {e}")
+        return None
+
+
+async def save_processing_cache(source_file_unique_id: str, operation: str, telegram_file_id: str) -> None:
+    """Saves processed media operation telegram_file_id to cache."""
+    if not source_file_unique_id or not operation or not telegram_file_id:
+        return
+    pool = get_pool()
+    try:
+        now = datetime.now(timezone.utc)
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO media_processing_cache
+                    (source_file_unique_id, operation, telegram_file_id, created_at, last_used_at)
+                VALUES ($1, $2, $3, $4, $4)
+                ON CONFLICT (source_file_unique_id, operation) DO UPDATE SET
+                    telegram_file_id = EXCLUDED.telegram_file_id,
+                    last_used_at     = EXCLUDED.last_used_at
+                """,
+                source_file_unique_id, operation, telegram_file_id, now,
+            )
+    except Exception as e:
+        logger.warning(f"save_processing_cache error: {e}")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Portfolio messages
 # ─────────────────────────────────────────────────────────────────────────────

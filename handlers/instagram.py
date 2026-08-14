@@ -7,9 +7,10 @@ from aiogram.types import (
     InputMediaPhoto, InputMediaVideo,
 )
 
+from services.instagram_parser import parse_instagram_url, INSTAGRAM_REGEX
 from services.downloader import download_instagram_media
 from services.ffmpeg_service import extract_audio_from_video, convert_to_round_video, change_video_speed
-from database.db import increment_user_downloads, get_cached_media, save_cached_media
+from database.db import get_cached_media, save_cached_media, increment_user_downloads, get_processing_cache, save_processing_cache
 from utils.helpers import (
     get_media_inline_keyboard, safe_remove_files, check_user_subscriptions,
     get_subscription_keyboard, clean_html, check_file_size,
@@ -19,17 +20,15 @@ from utils.performance import Timer
 router = Router()
 logger = logging.getLogger(__name__)
 
-INSTAGRAM_REGEX = r'https?://(?:www\.)?instagram\.com/(?:p|reel|reels|tv)/[A-Za-z0-9_-]+'
-
 
 @router.message(F.text.regexp(INSTAGRAM_REGEX))
 async def handle_instagram_link(message: Message):
     user_id = message.from_user.id
-    url_match = re.search(INSTAGRAM_REGEX, message.text)
-    if not url_match:
+    parsed = parse_instagram_url(message.text)
+    if not parsed:
         return
 
-    url = url_match.group(0)
+    url = parsed.canonical_url
 
     async with Timer("instagram_download") as t:
         # Subscription check
@@ -193,11 +192,25 @@ async def cb_extract_mp3(callback: CallbackQuery):
         await callback.answer("❌ Ushbu xabarda video topilmadi!", show_alert=True)
         return
 
+    unique_id = msg.video.file_unique_id
+    cached_file_id = await get_processing_cache(unique_id, "audio")
+    if cached_file_id:
+        try:
+            await callback.answer("⚡ Keshdan yuklanmoqda...")
+            await msg.reply_audio(
+                audio=cached_file_id,
+                caption="🎵 <b>Videodan ajratib olingan MP3</b>\n\n🤖 @InstaOhang_bot",
+                parse_mode="HTML",
+            )
+            return
+        except Exception as cache_err:
+            logger.warning(f"Cached audio send failed: {cache_err}")
+
     await callback.answer("🎵 Musiqa ajratib olinmoqda...")
     status_msg = await msg.reply("🎧 <b>Audio ajratib olinmoqda...</b>", parse_mode="HTML")
 
     video_file    = await callback.bot.get_file(msg.video.file_id)
-    download_path = f"downloads/temp_{msg.video.file_unique_id}.mp4"
+    download_path = f"downloads/temp_{unique_id}.mp4"
     await callback.bot.download_file(video_file.file_path, download_path)
 
     try:
@@ -211,11 +224,14 @@ async def cb_extract_mp3(callback: CallbackQuery):
             return
 
         audio_file = FSInputFile(mp3_path)
-        await msg.reply_audio(
+        sent_audio = await msg.reply_audio(
             audio=audio_file,
             caption="🎵 <b>Videodan ajratib olingan MP3</b>\n\n🤖 @InstaOhang_bot",
             parse_mode="HTML",
         )
+        if sent_audio and sent_audio.audio:
+            await save_processing_cache(unique_id, "audio", sent_audio.audio.file_id)
+
         await status_msg.delete()
         safe_remove_files(download_path, mp3_path)
 
@@ -232,13 +248,23 @@ async def cb_make_round_inline(callback: CallbackQuery):
         await callback.answer("❌ Video topilmadi!", show_alert=True)
         return
 
+    unique_id = msg.video.file_unique_id
+    cached_file_id = await get_processing_cache(unique_id, "round")
+    if cached_file_id:
+        try:
+            await callback.answer("⚡ Keshdan yuklanmoqda...")
+            await msg.reply_video_note(video_note=cached_file_id)
+            return
+        except Exception as cache_err:
+            logger.warning(f"Cached video_note send failed: {cache_err}")
+
     await callback.answer("⭕ Dumaloq video tayyorlanmoqda...")
     status_msg = await msg.reply(
         "⭕ <b>Videoni dumaloq shaklga keltirish qilinmoqda...</b>", parse_mode="HTML"
     )
 
     video_file    = await callback.bot.get_file(msg.video.file_id)
-    download_path = f"downloads/temp_round_{msg.video.file_unique_id}.mp4"
+    download_path = f"downloads/temp_round_{unique_id}.mp4"
     await callback.bot.download_file(video_file.file_path, download_path)
 
     try:
@@ -252,7 +278,10 @@ async def cb_make_round_inline(callback: CallbackQuery):
             return
 
         video_note = FSInputFile(round_path)
-        await msg.reply_video_note(video_note=video_note)
+        sent_vn = await msg.reply_video_note(video_note=video_note)
+        if sent_vn and sent_vn.video_note:
+            await save_processing_cache(unique_id, "round", sent_vn.video_note.file_id)
+
         await status_msg.delete()
         safe_remove_files(download_path, round_path)
 
@@ -269,13 +298,27 @@ async def cb_speed_video(callback: CallbackQuery):
         await callback.answer("❌ Video topilmadi!", show_alert=True)
         return
 
+    unique_id = msg.video.file_unique_id
+    cached_file_id = await get_processing_cache(unique_id, "fast_1_5")
+    if cached_file_id:
+        try:
+            await callback.answer("⚡ Keshdan yuklanmoqda...")
+            await msg.reply_video(
+                video=cached_file_id,
+                caption="⚡ <b>1.5x Tezlashtirilgan Video</b>\n\n🤖 @InstaOhang_bot",
+                parse_mode="HTML",
+            )
+            return
+        except Exception as cache_err:
+            logger.warning(f"Cached fast video send failed: {cache_err}")
+
     await callback.answer("⏩ 1.5x Tezlashtirilmoqda...")
     status_msg = await msg.reply(
         "⚡ <b>Video 1.5x tezlashtirilmoqda...</b>", parse_mode="HTML"
     )
 
     video_file    = await callback.bot.get_file(msg.video.file_id)
-    download_path = f"downloads/temp_speed_{msg.video.file_unique_id}.mp4"
+    download_path = f"downloads/temp_speed_{unique_id}.mp4"
     await callback.bot.download_file(video_file.file_path, download_path)
 
     try:
@@ -289,11 +332,14 @@ async def cb_speed_video(callback: CallbackQuery):
             return
 
         fast_video = FSInputFile(fast_path)
-        await msg.reply_video(
+        sent_vid = await msg.reply_video(
             video=fast_video,
             caption="⚡ <b>1.5x Tezlashtirilgan Video</b>\n\n🤖 @InstaOhang_bot",
             parse_mode="HTML",
         )
+        if sent_vid and sent_vid.video:
+            await save_processing_cache(unique_id, "fast_1_5", sent_vid.video.file_id)
+
         await status_msg.delete()
         safe_remove_files(download_path, fast_path)
 
