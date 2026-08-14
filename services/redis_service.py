@@ -69,12 +69,9 @@ async def acquire_lock(lock_name: str, ttl_seconds: int = 60) -> AsyncGenerator[
         finally:
             if acquired:
                 try:
-                    # Delete only if the stored token still belongs to us.
                     await client.eval(
                         "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
-                        1,
-                        key,
-                        token,
+                        1, key, token,
                     )
                 except Exception as exc:
                     logger.warning("Redis lock release failed for %s: %s", key, exc)
@@ -98,37 +95,44 @@ async def check_rate_limit(
     max_requests: int = 5,
     window_sec: int = 60,
 ) -> tuple[bool, int]:
-    """Sliding-window limiter. A rejected request is never added to the window."""
+    """Atomic sliding-window limiter; rejected requests are not counted."""
     key = f"rate:{action}:{identifier}"
     now = time.time()
-    cutoff = now - window_sec
     client = get_redis()
 
     if client:
         try:
-            async with client.pipeline(transaction=True) as pipe:
-                pipe.zremrangebyscore(key, 0, cutoff)
-                pipe.zcard(key)
-                result = await pipe.execute()
-                count = int(result[1])
-                if count >= max_requests:
-                    oldest = await client.zrange(key, 0, 0, withscores=True)
-                    retry_after = window_sec
-                    if oldest:
-                        retry_after = max(1, int(window_sec - (now - oldest[0][1])))
-                    return False, retry_after
-
-                member = f"{now:.6f}:{uuid.uuid4().hex}"
-                await client.zadd(key, {member: now})
-                await client.expire(key, window_sec)
-                return True, 0
+            member = f"{now:.6f}:{uuid.uuid4().hex}"
+            script = """
+            local key = KEYS[1]
+            local now = tonumber(ARGV[1])
+            local cutoff = tonumber(ARGV[2])
+            local limit = tonumber(ARGV[3])
+            local window = tonumber(ARGV[4])
+            redis.call('ZREMRANGEBYSCORE', key, 0, cutoff)
+            local count = redis.call('ZCARD', key)
+            if count >= limit then
+                local first = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+                if first[2] then
+                    return {0, math.max(1, math.ceil(window - (now - tonumber(first[2]))))}
+                end
+                return {0, window}
+            end
+            redis.call('ZADD', key, now, ARGV[5])
+            redis.call('EXPIRE', key, window)
+            return {1, 0}
+            """
+            allowed, retry_after = await client.eval(
+                script, 1, key, str(now), str(now - window_sec),
+                str(max_requests), str(window_sec), member,
+            )
+            return bool(allowed), int(retry_after)
         except Exception as exc:
             logger.warning("Redis rate-limit fallback: %s", exc)
 
     timestamps = _in_memory_rate_limits.setdefault(key, [])
     timestamps[:] = [t for t in timestamps if now - t < window_sec]
     if len(timestamps) >= max_requests:
-        retry_after = max(1, int(window_sec - (now - timestamps[0])))
-        return False, retry_after
+        return False, max(1, int(window_sec - (now - timestamps[0])))
     timestamps.append(now)
     return True, 0
