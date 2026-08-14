@@ -13,7 +13,9 @@ from database.db import (
     add_favorite,
     remove_favorite,
     is_favorite,
+    get_music_by_file_unique_id,
 )
+from database.postgres import get_pool
 from utils.helpers import clean_html, check_user_subscriptions, get_subscription_keyboard
 
 router = Router()
@@ -186,6 +188,35 @@ async def cb_favorite_remove(callback: CallbackQuery):
         reply_markup=build_favorites_keyboard(items, page, total),
         parse_mode="HTML",
     )
+
+
+@router.callback_query(F.data.startswith("fav_play:"))
+async def cb_favorite_play(callback: CallbackQuery):
+    """Handler for playing a music from favorites list using cached file_id from DB."""
+    music_id = int(callback.data.split(":")[1])
+    await callback.answer("🎵 Yuklanmoqda...")
+
+    try:
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT title, artist, file_id FROM music WHERE id = $1 AND is_active = TRUE",
+                music_id,
+            )
+        if not row:
+            await callback.answer("❌ Musiqa topilmadi!", show_alert=True)
+            return
+
+        await callback.message.answer_audio(
+            audio=row["file_id"],
+            title=clean_html(row["title"]),
+            performer=clean_html(row["artist"] or "Unknown"),
+            caption="🎧 <b>InstaOhang Music</b> — Sevimlilaringizdan\n🤖 @InstaOhang_bot",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.error(f"fav_play error (music_id={music_id}): {e}")
+        await callback.answer("❌ Yuklashda xatolik yuz berdi!", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("fav_add:"))
