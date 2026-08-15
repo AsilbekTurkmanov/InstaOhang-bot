@@ -345,6 +345,13 @@ async def cmd_users_count(message: Message):
 # Uses batch + sleep strategy and handles 429 Too Many Requests
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Broadcast configuration constants
+# ─────────────────────────────────────────────────────────────────────────────
+BROADCAST_BATCH_SIZE = 25        # users per batch
+BROADCAST_BATCH_DELAY = 1.0      # seconds between batches (Telegram rate limit)
+BROADCAST_RETRY_DELAY = 5.0      # seconds to wait after 429 Too Many Requests
+
 # Track active broadcast background tasks to prevent garbage collection and allow clean shutdown
 _active_broadcast_tasks: set[asyncio.Task] = set()
 

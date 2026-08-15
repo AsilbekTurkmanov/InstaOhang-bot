@@ -85,7 +85,6 @@ class OpenAIProvider(AIProvider):
             except Exception as e:
                 logger.error(f"OpenAI Provider error: {e}")
                 return ""
-        return ""
 
 
 def get_ai_provider() -> Optional[AIProvider]:

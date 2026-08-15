@@ -3,6 +3,7 @@ import logging
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, FSInputFile
+from config import DOWNLOAD_DIR
 from services.ffmpeg_service import convert_to_round_video
 from utils.helpers import safe_remove_files, clean_html, check_file_size
 
@@ -29,7 +30,7 @@ async def cmd_round(message: Message):
     status_msg = await message.answer("⭕ <b>Videoni dumaloq shaklga keltirish qilinmoqda...</b>\n<i>Iltimos kuting ⏳</i>", parse_mode="HTML")
     
     file_id = video.file_id
-    temp_in = f"downloads/round_in_{message.from_user.id}_{message.message_id}.mp4"
+    temp_in = os.path.join(DOWNLOAD_DIR, f"round_in_{message.from_user.id}_{message.message_id}.mp4")
     
     try:
         # Download video from Telegram

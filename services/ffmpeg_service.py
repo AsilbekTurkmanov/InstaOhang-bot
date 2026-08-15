@@ -52,7 +52,7 @@ async def convert_to_round_video(input_path: str, output_path: str | None = None
     args = [
         "-y", "-threads", "0", "-i", input_path,
         "-map", "0:v:0", "-map", "0:a:0?",
-        "-vf", "crop=min(iw\,ih):min(iw\,ih),scale=640:640,setsar=1",
+        "-vf", "crop=min(iw\\,ih):min(iw\\,ih),scale=640:640,setsar=1",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24",
         "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-pix_fmt", "yuv420p",
         "-t", "60", output_path,
@@ -63,7 +63,7 @@ async def convert_to_round_video(input_path: str, output_path: str | None = None
         # Silent videos must still become valid Video Notes.
         fallback = [
             "-y", "-threads", "0", "-i", input_path, "-an",
-            "-vf", "crop=min(iw\,ih):min(iw\,ih),scale=640:640,setsar=1",
+            "-vf", "crop=min(iw\\,ih):min(iw\\,ih),scale=640:640,setsar=1",
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24",
             "-pix_fmt", "yuv420p", "-t", "60", output_path,
         ]
@@ -96,7 +96,11 @@ async def change_video_speed(input_path: str, speed: float = 1.5, output_path: s
     ]
     try:
         await _run_ffmpeg(args, "change_video_speed")
-    except RuntimeError:
+    except RuntimeError as primary_err:
+        logger.warning(
+            f"[FFmpeg] Speed change failed ({primary_err}), "
+            "trying video-only fallback (no audio stream)..."
+        )
         # A video may have no audio stream. In that case process video only.
         fallback = [
             "-y", "-threads", "0", "-i", input_path,

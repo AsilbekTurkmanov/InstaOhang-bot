@@ -344,6 +344,7 @@ async def upsert_portfolio_message(
 ) -> bool:
     """
     Saves portfolio message to PostgreSQL if not already present.
+    Uses atomic INSERT...ON CONFLICT to prevent race conditions.
     Returns True if a new message was inserted, False if already existed.
     """
     if not (name or email or message):
@@ -351,21 +352,21 @@ async def upsert_portfolio_message(
     pool = get_pool()
     try:
         async with pool.acquire() as conn:
-            existing = await conn.fetchval(
-                "SELECT id FROM portfolio_messages WHERE name = $1 AND email = $2 AND message = $3",
-                name, email, message,
-            )
-            if not existing:
-                await conn.execute(
-                    """
-                    INSERT INTO portfolio_messages
-                        (name, email, phone, subject, message, ip_address, status, telegram_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                    """,
-                    name, email, phone, subject, message, ip_address, status, telegram_id,
+            # Atomic upsert: insert only if (name, email, message) combo is new
+            result = await conn.execute(
+                """
+                INSERT INTO portfolio_messages
+                    (name, email, phone, subject, message, ip_address, status, telegram_id)
+                SELECT $1, $2, $3, $4, $5, $6, $7, $8
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM portfolio_messages
+                    WHERE name = $1 AND email = $2 AND message = $5
                 )
-                return True
-            return False
+                """,
+                name, email, phone, subject, message, ip_address, status, telegram_id,
+            )
+            # asyncpg returns 'INSERT 0 N' — N=1 means inserted, N=0 means existed
+            return result == "INSERT 0 1"
     except Exception as e:
         logger.error(f"upsert_portfolio_message error: {e}")
         return False

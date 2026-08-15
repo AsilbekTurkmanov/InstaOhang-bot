@@ -1,3 +1,4 @@
+import os
 import logging
 from aiogram import Router, F
 from aiogram.filters import Command
@@ -8,6 +9,7 @@ from aiogram.types import (
 
 from services.downloader import search_music_results, download_music_by_id
 from services.ffmpeg_service import extract_audio_from_video, change_video_speed
+from config import DOWNLOAD_DIR
 from database.db import (
     get_cached_media, save_cached_media,
     get_or_create_music, increment_music_views,
@@ -244,7 +246,7 @@ async def cmd_audio_extract(message: Message):
         return
 
     status_msg = await message.answer("🎧 <b>Audio ajratib olinmoqda...</b>", parse_mode="HTML")
-    temp_video = f"downloads/audio_ext_{message.message_id}.mp4"
+    temp_video = os.path.join(DOWNLOAD_DIR, f"audio_ext_{message.message_id}.mp4")
 
     try:
         file_info = await message.bot.get_file(target_msg.video.file_id)
@@ -284,7 +286,7 @@ async def cmd_video_fast(message: Message):
         return
 
     status_msg = await message.answer("⚡ <b>Video 1.5x tezlashtirilmoqda...</b>", parse_mode="HTML")
-    temp_video = f"downloads/fast_{message.message_id}.mp4"
+    temp_video = os.path.join(DOWNLOAD_DIR, f"fast_{message.message_id}.mp4")
     try:
         file_info = await message.bot.get_file(target_msg.video.file_id)
         await message.bot.download_file(file_info.file_path, temp_video)
@@ -323,7 +325,7 @@ async def cmd_video_slow(message: Message):
         return
 
     status_msg = await message.answer("🐢 <b>Video 0.8x sekinlashtirilmoqda...</b>", parse_mode="HTML")
-    temp_video = f"downloads/slow_{message.message_id}.mp4"
+    temp_video = os.path.join(DOWNLOAD_DIR, f"slow_{message.message_id}.mp4")
     try:
         file_info = await message.bot.get_file(target_msg.video.file_id)
         await message.bot.download_file(file_info.file_path, temp_video)

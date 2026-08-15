@@ -11,6 +11,7 @@ from services.instagram_parser import parse_instagram_url, INSTAGRAM_REGEX
 from services.downloader import download_instagram_media
 from services.ffmpeg_service import extract_audio_from_video, convert_to_round_video, change_video_speed
 from database.db import get_cached_media, save_cached_media, increment_user_downloads, get_processing_cache, save_processing_cache
+from config import DOWNLOAD_DIR
 from utils.helpers import (
     get_media_inline_keyboard, safe_remove_files, check_user_subscriptions,
     get_subscription_keyboard, clean_html, check_file_size,
@@ -83,7 +84,9 @@ async def handle_instagram_link(message: Message):
             media_type = media_data["type"]
             items      = media_data.get("items", [])
 
-            caption = f"🎬 <b>{author}</b>\n\n{title[:150]}...\n\n🤖 @InstaOhang_bot"
+            title_display = title[:100] + "..." if len(title) > 100 else title
+            author_display = author[:50] if len(author) > 50 else author
+            caption = f"⚬️ <b>{author_display}</b>\n\n{title_display}\n\n🤖 @InstaOhang_bot"
             all_files_to_clean = []
 
             if media_type == "carousel" and len(items) > 1:
@@ -108,6 +111,7 @@ async def handle_instagram_link(message: Message):
                 if media_group:
                     try:
                         await message.answer_media_group(media=media_group)
+                        await increment_user_downloads(user_id, url, media_type)
                     except Exception as send_err:
                         logger.error(f"Telegram media group send error: {send_err}")
                         await status_msg.edit_text(
@@ -210,7 +214,7 @@ async def cb_extract_mp3(callback: CallbackQuery):
     status_msg = await msg.reply("🎧 <b>Audio ajratib olinmoqda...</b>", parse_mode="HTML")
 
     video_file    = await callback.bot.get_file(msg.video.file_id)
-    download_path = f"downloads/temp_{unique_id}.mp4"
+    download_path = os.path.join(DOWNLOAD_DIR, f"temp_{unique_id}.mp4")
     await callback.bot.download_file(video_file.file_path, download_path)
 
     try:
@@ -264,7 +268,7 @@ async def cb_make_round_inline(callback: CallbackQuery):
     )
 
     video_file    = await callback.bot.get_file(msg.video.file_id)
-    download_path = f"downloads/temp_round_{unique_id}.mp4"
+    download_path = os.path.join(DOWNLOAD_DIR, f"temp_round_{unique_id}.mp4")
     await callback.bot.download_file(video_file.file_path, download_path)
 
     try:
@@ -318,7 +322,7 @@ async def cb_speed_video(callback: CallbackQuery):
     )
 
     video_file    = await callback.bot.get_file(msg.video.file_id)
-    download_path = f"downloads/temp_speed_{unique_id}.mp4"
+    download_path = os.path.join(DOWNLOAD_DIR, f"temp_speed_{unique_id}.mp4")
     await callback.bot.download_file(video_file.file_path, download_path)
 
     try:
