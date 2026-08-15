@@ -422,7 +422,104 @@ INVIDIOUS_INSTANCES = [
 ]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-engine audio download helpers (bypasses YouTube datacenter IP blocks)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _try_loader_download(video_id: str, unique_id: str) -> dict | None:
+    """
+    Downloads audio via Loader.to API engine.
+    Bypasses YouTube bot checks / SABR on datacenter IPs cleanly.
+    """
+    import urllib.request
+    import json
+    import time
+    import subprocess
+
+    url_yt = f"https://www.youtube.com/watch?v={video_id}"
+    mp3_path = os.path.join(DOWNLOAD_DIR, f"music_{unique_id}.mp3")
+    raw_path = os.path.join(DOWNLOAD_DIR, f"music_{unique_id}.raw")
+
+    try:
+        url1 = f"https://loader.to/ajax/download.php?format=mp3&url={url_yt}"
+        req1 = urllib.request.Request(url1, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        res1 = json.loads(urllib.request.urlopen(req1, timeout=10).read().decode("utf-8"))
+        
+        job_id = res1.get("id")
+        title = res1.get("title", "Music")
+        if not job_id:
+            logger.warning("[Loader.to] No job ID returned")
+            return None
+
+        logger.info(f"[Loader.to] Started download job {job_id} for '{title}'")
+        dl_url = None
+        for _ in range(15):
+            time.sleep(1)
+            url2 = f"https://loader.to/ajax/progress.php?id={job_id}"
+            req2 = urllib.request.Request(url2, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+            res2 = json.loads(urllib.request.urlopen(req2, timeout=10).read().decode("utf-8"))
+            if res2.get("download_url"):
+                dl_url = res2["download_url"]
+                break
+
+        if not dl_url:
+            logger.warning(f"[Loader.to] Timed out waiting for download_url (job {job_id})")
+            return None
+
+        # Download direct stream
+        logger.info(f"[Loader.to] Downloading stream from {dl_url[:60]}...")
+        req_dl = urllib.request.Request(dl_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        with urllib.request.urlopen(req_dl, timeout=120) as resp:
+            with open(raw_path, "wb") as f:
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+
+        if not os.path.exists(raw_path) or os.path.getsize(raw_path) < 1024:
+            logger.warning("[Loader.to] Raw downloaded file too small")
+            if os.path.exists(raw_path):
+                os.remove(raw_path)
+            return None
+
+        # Convert to MP3 via FFmpeg
+        from services.ffmpeg_service import get_ffmpeg_bin
+        ffmpeg_bin = get_ffmpeg_bin()
+        cmd = [
+            ffmpeg_bin, "-y", "-i", raw_path,
+            "-vn", "-acodec", "libmp3lame", "-ab", "192k", "-ar", "44100",
+            mp3_path,
+        ]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        if os.path.exists(raw_path):
+            try:
+                os.remove(raw_path)
+            except Exception:
+                pass
+
+        if res.returncode == 0 and os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
+            logger.info(f"[Loader.to] ✅ Success downloading '{title}'")
+            return {
+                "filepath": mp3_path,
+                "title": title,
+                "performer": "InstaOhang Engine",
+                "duration": 0,
+            }
+    except Exception as e:
+        logger.warning(f"[Loader.to] Engine error: {e}")
+        for p in [raw_path, mp3_path]:
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+
+    return None
+
+
 def _try_invidious_download(video_id: str, unique_id: str) -> dict | None:
+
     """
     Downloads audio via public Invidious API.
     Invidious proxies YouTube requests — no bot detection on datacenter IPs.
@@ -541,7 +638,16 @@ def _do_music_download(video_id: str) -> dict:
     output_template = os.path.join(DOWNLOAD_DIR, f"music_{unique_id}.%(ext)s")
     url = f"https://www.youtube.com/watch?v={video_id}"
 
-    # ── Stage 0: Invidious API (public proxy — works on datacenter IPs) ────
+    # ── Stage 0: Loader.to API engine (bypasses YouTube bot checks on datacenter IPs)
+    try:
+        result = _try_loader_download(video_id, unique_id)
+        if result:
+            return result
+        logger.warning("[Music] Stage 0 Loader.to failed, trying Stage 0.5 Invidious...")
+    except Exception as loader_err:
+        logger.warning(f"[Music] Stage 0 Loader.to error: {loader_err}")
+
+    # ── Stage 0.5: Invidious API (public proxy) ─────────────────────────────
     try:
         result = _try_invidious_download(video_id, unique_id)
         if result:
