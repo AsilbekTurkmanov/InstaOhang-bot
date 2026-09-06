@@ -9,6 +9,8 @@ from aiogram.types import (
 
 from services.downloader import search_music_results, download_music_by_id
 from services.ffmpeg_service import extract_audio_from_video, change_video_speed
+from services.instagram_parser import INSTAGRAM_REGEX
+from services.youtube_parser import YOUTUBE_REGEX
 from config import DOWNLOAD_DIR
 from database.db import (
     get_cached_media, save_cached_media,
@@ -226,6 +228,9 @@ async def cmd_music_search(message: Message):
 async def text_music_search(message: Message):
     query = message.text.strip()
     if not query or query in MENU_BUTTONS:
+        return
+    # Do not treat media URLs as music search queries
+    if INSTAGRAM_REGEX.search(query) or YOUTUBE_REGEX.search(query):
         return
     await process_music_search(message, query)
 

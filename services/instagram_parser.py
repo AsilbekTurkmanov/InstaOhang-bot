@@ -17,19 +17,30 @@ class ParsedInstagramUrl(NamedTuple):
     shortcode: str
 
 
+def extract_instagram_url_from_text(text: str) -> Optional[str]:
+    """Extracts first Instagram URL from text."""
+    if not text:
+        return None
+    match = INSTAGRAM_REGEX.search(text)
+    if match:
+        return match.group(0)
+    return None
+
+
 def parse_instagram_url(url: str) -> Optional[ParsedInstagramUrl]:
     """Validate an Instagram URL and preserve its actual media route."""
     if not url:
         return None
 
-    raw = str(url).strip()
-    parsed = urlparse(raw)
-    host = parsed.netloc.lower().split(":", 1)[0]
-    if parsed.scheme.lower() not in {"http", "https"} or host not in {"instagram.com", "www.instagram.com"}:
+    raw_text = str(url).strip()
+    match = INSTAGRAM_REGEX.search(raw_text)
+    if not match:
         return None
 
+    matched_url = match.group(0)
+    parsed = urlparse(matched_url)
     parts = [p for p in parsed.path.split("/") if p]
-    if len(parts) != 2 or parts[0].lower() not in {"p", "reel", "reels", "tv"}:
+    if len(parts) < 2 or parts[0].lower() not in {"p", "reel", "reels", "tv"}:
         return None
 
     route = parts[0].lower()
@@ -39,4 +50,5 @@ def parse_instagram_url(url: str) -> Optional[ParsedInstagramUrl]:
 
     media_type = "reel" if route in {"reel", "reels"} else route
     canonical_url = f"https://www.instagram.com/{route}/{shortcode}/"
-    return ParsedInstagramUrl(raw, canonical_url, media_type, shortcode)
+    return ParsedInstagramUrl(matched_url, canonical_url, media_type, shortcode)
+

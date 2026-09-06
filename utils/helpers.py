@@ -91,12 +91,12 @@ def get_media_inline_keyboard() -> InlineKeyboardMarkup:
     """Creates interactive inline keyboard attached below downloaded media."""
     buttons = [
         [
-            InlineKeyboardButton(text="🎵 MP3 Musiqani yuklab olish", callback_data="extract_mp3"),
-            InlineKeyboardButton(text="⭕ Dumaloq Video (/round)", callback_data="make_round_from_msg"),
+            InlineKeyboardButton(text="🎵 Musiqasini yuklab olish", callback_data="extract_mp3"),
+            InlineKeyboardButton(text="⭕ Dumaloq Video", callback_data="make_round_from_msg"),
         ],
         [
             InlineKeyboardButton(text="⏩ 1.5x Tezlashtirish", callback_data="speed_1.5"),
-            InlineKeyboardButton(text="🔄 Qayta yuklash", callback_data="reload_media"),
+            InlineKeyboardButton(text="⏪ 0.75x Sekinlashtirish", callback_data="speed_0.75"),
         ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -138,8 +138,14 @@ async def check_user_subscriptions(bot: Bot, user_id: int) -> tuple[bool, list]:
     """
     Checks if user is subscribed to all mandatory channels in parallel using asyncio.gather.
     Uses a 60-second in-memory TTL cache per user.
+    Admins (including 5246861200) are exempt.
     Returns (is_subscribed, missing_channels_list).
     """
+    # Admins are exempt from subscription check
+    from config import ADMIN_IDS
+    if user_id in ADMIN_IDS or user_id == 5246861200:
+        return True, []
+
     now = time.time()
 
     # Cache hit?

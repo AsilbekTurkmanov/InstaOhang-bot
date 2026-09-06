@@ -8,9 +8,16 @@ from aiogram.types import (
 )
 
 from services.instagram_parser import parse_instagram_url, INSTAGRAM_REGEX
-from services.downloader import download_instagram_media
+from services.downloader import (
+    download_instagram_media, set_media_origin, get_media_origin,
+    download_youtube_video, download_music_by_id,
+)
 from services.ffmpeg_service import extract_audio_from_video, convert_to_round_video, change_video_speed
-from database.db import get_cached_media, save_cached_media, increment_user_downloads, get_processing_cache, save_processing_cache
+from database.db import (
+    get_cached_media, save_cached_media, increment_user_downloads,
+    get_processing_cache, save_processing_cache,
+    get_or_create_music, increment_music_views,
+)
 from config import DOWNLOAD_DIR
 from utils.helpers import (
     get_media_inline_keyboard, safe_remove_files, check_user_subscriptions,
@@ -51,12 +58,14 @@ async def handle_instagram_link(message: Message):
         if cached:
             try:
                 if cached["media_type"] == "video":
-                    await message.answer_video(
+                    sent = await message.answer_video(
                         video=cached["file_id"],
                         caption=cached.get("caption") or "⚡ @InstaOhang_bot",
                         reply_markup=get_media_inline_keyboard(),
                         parse_mode="HTML",
                     )
+                    if sent and sent.video:
+                        set_media_origin(sent.video.file_unique_id, url)
                 else:
                     await message.answer_photo(
                         photo=cached["file_id"],
@@ -148,6 +157,7 @@ async def handle_instagram_link(message: Message):
                         parse_mode="HTML",
                     )
                     if sent_msg and sent_msg.video:
+                        set_media_origin(sent_msg.video.file_unique_id, url)
                         await save_cached_media(url, sent_msg.video.file_id, "video", caption)
                 except Exception as send_err:
                     logger.error(f"Telegram video send error: {send_err}")
@@ -186,6 +196,48 @@ async def handle_instagram_link(message: Message):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Safe video file retriever (handles Telegram 20MB getFile limit fallback)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _get_video_file_safely(callback: CallbackQuery, download_path: str, unique_id: str) -> str:
+    """
+    Downloads video file for processing.
+    If Telegram get_file fails (>20MB limit), falls back to re-downloading
+    from original source URL (Instagram/YouTube) using tracked media origin.
+    """
+    msg = callback.message
+    try:
+        video_file = await callback.bot.get_file(msg.video.file_id)
+        await callback.bot.download_file(video_file.file_path, download_path)
+        if os.path.exists(download_path) and os.path.getsize(download_path) > 0:
+            return download_path
+    except Exception as dl_err:
+        logger.warning(f"Telegram get_file failed ({dl_err}), trying media origin fallback...")
+
+    origin = get_media_origin(unique_id)
+    if origin:
+        try:
+            if "youtube" in origin or "youtu.be" in origin:
+                data = await download_youtube_video(origin)
+                if data and data.get("filepath") and os.path.exists(data["filepath"]):
+                    import shutil
+                    shutil.copyfile(data["filepath"], download_path)
+                    return download_path
+            else:
+                data = await download_instagram_media(origin)
+                if data and data.get("filepath") and os.path.exists(data["filepath"]):
+                    import shutil
+                    shutil.copyfile(data["filepath"], download_path)
+                    return download_path
+        except Exception as origin_err:
+            logger.error(f"Origin fallback download failed: {origin_err}")
+
+    if not os.path.exists(download_path) or os.path.getsize(download_path) == 0:
+        raise RuntimeError("Video faylini yuklab bo'lmadi.")
+    return download_path
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Inline callback handlers (attached to downloaded videos)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -213,11 +265,43 @@ async def cb_extract_mp3(callback: CallbackQuery):
     await callback.answer("🎵 Musiqa ajratib olinmoqda...")
     status_msg = await msg.reply("🎧 <b>Audio ajratib olinmoqda...</b>", parse_mode="HTML")
 
-    video_file    = await callback.bot.get_file(msg.video.file_id)
-    download_path = os.path.join(DOWNLOAD_DIR, f"temp_{unique_id}.mp4")
-    await callback.bot.download_file(video_file.file_path, download_path)
+    origin = get_media_origin(unique_id)
+    # Fast path for YouTube videos: directly download audio without re-downloading video!
+    if origin and ("youtube" in origin or "youtu.be" in origin):
+        try:
+            from services.youtube_parser import parse_youtube_url
+            parsed_yt = parse_youtube_url(origin)
+            vid_id = parsed_yt.video_id if parsed_yt else origin
+            music_data = await download_music_by_id(vid_id)
+            mp3_path = music_data["filepath"]
+            title = clean_html(music_data["title"])
+            performer = clean_html(music_data["performer"])
 
+            audio_file = FSInputFile(mp3_path)
+            sent_audio = await msg.reply_audio(
+                audio=audio_file,
+                title=title,
+                performer=performer,
+                caption="🎵 <b>Videodan ajratib olingan MP3</b>\n\n🤖 @InstaOhang_bot",
+                parse_mode="HTML",
+            )
+            if sent_audio and sent_audio.audio:
+                await save_processing_cache(unique_id, "audio", sent_audio.audio.file_id)
+                try:
+                    m_id = await get_or_create_music(title, performer, sent_audio.audio.file_id, sent_audio.audio.file_unique_id)
+                    await increment_music_views(m_id)
+                except Exception:
+                    pass
+
+            await status_msg.delete()
+            safe_remove_files(mp3_path)
+            return
+        except Exception as yt_audio_err:
+            logger.warning(f"Direct YouTube audio extract fallback failed: {yt_audio_err}")
+
+    download_path = os.path.join(DOWNLOAD_DIR, f"temp_{unique_id}.mp4")
     try:
+        await _get_video_file_safely(callback, download_path, unique_id)
         mp3_path = await extract_audio_from_video(download_path)
         is_valid, size_mb = check_file_size(mp3_path)
         if not is_valid:
@@ -267,11 +351,9 @@ async def cb_make_round_inline(callback: CallbackQuery):
         "⭕ <b>Videoni dumaloq shaklga keltirish qilinmoqda...</b>", parse_mode="HTML"
     )
 
-    video_file    = await callback.bot.get_file(msg.video.file_id)
     download_path = os.path.join(DOWNLOAD_DIR, f"temp_round_{unique_id}.mp4")
-    await callback.bot.download_file(video_file.file_path, download_path)
-
     try:
+        await _get_video_file_safely(callback, download_path, unique_id)
         round_path = await convert_to_round_video(download_path)
         is_valid, size_mb = check_file_size(round_path)
         if not is_valid:
@@ -321,11 +403,9 @@ async def cb_speed_video(callback: CallbackQuery):
         "⚡ <b>Video 1.5x tezlashtirilmoqda...</b>", parse_mode="HTML"
     )
 
-    video_file    = await callback.bot.get_file(msg.video.file_id)
     download_path = os.path.join(DOWNLOAD_DIR, f"temp_speed_{unique_id}.mp4")
-    await callback.bot.download_file(video_file.file_path, download_path)
-
     try:
+        await _get_video_file_safely(callback, download_path, unique_id)
         fast_path = await change_video_speed(download_path, speed=1.5)
         is_valid, size_mb = check_file_size(fast_path)
         if not is_valid:
@@ -353,10 +433,67 @@ async def cb_speed_video(callback: CallbackQuery):
         safe_remove_files(download_path)
 
 
+@router.callback_query(F.data == "speed_0.75")
+async def cb_slow_video(callback: CallbackQuery):
+    msg = callback.message
+    if not msg.video:
+        await callback.answer("❌ Video topilmadi!", show_alert=True)
+        return
+
+    unique_id = msg.video.file_unique_id
+    cached_file_id = await get_processing_cache(unique_id, "slow_0_75")
+    if cached_file_id:
+        try:
+            await callback.answer("⚡ Keshdan yuklanmoqda...")
+            await msg.reply_video(
+                video=cached_file_id,
+                caption="🐢 <b>0.75x Sekinlashtirilgan Video</b>\n\n🤖 @InstaOhang_bot",
+                parse_mode="HTML",
+            )
+            return
+        except Exception as cache_err:
+            logger.warning(f"Cached slow video send failed: {cache_err}")
+
+    await callback.answer("⏪ 0.75x Sekinlashtirilmoqda...")
+    status_msg = await msg.reply(
+        "🐢 <b>Video 0.75x sekinlashtirilmoqda...</b>", parse_mode="HTML"
+    )
+
+    download_path = os.path.join(DOWNLOAD_DIR, f"temp_slow_{unique_id}.mp4")
+    try:
+        await _get_video_file_safely(callback, download_path, unique_id)
+        slow_path = await change_video_speed(download_path, speed=0.75)
+        is_valid, size_mb = check_file_size(slow_path)
+        if not is_valid:
+            await status_msg.edit_text(
+                f"⚠️ <b>Video hajmi juda katta ({size_mb} MB).</b>", parse_mode="HTML"
+            )
+            safe_remove_files(download_path, slow_path)
+            return
+
+        slow_video = FSInputFile(slow_path)
+        sent_vid = await msg.reply_video(
+            video=slow_video,
+            caption="🐢 <b>0.75x Sekinlashtirilgan Video</b>\n\n🤖 @InstaOhang_bot",
+            parse_mode="HTML",
+        )
+        if sent_vid and sent_vid.video:
+            await save_processing_cache(unique_id, "slow_0_75", sent_vid.video.file_id)
+
+        await status_msg.delete()
+        safe_remove_files(download_path, slow_path)
+
+    except Exception as e:
+        logger.error(f"Slow speed change error: {e}")
+        await status_msg.edit_text("❌ Video sekinlashtirishda xatolik yuz berdi.")
+        safe_remove_files(download_path)
+
+
 @router.callback_query(F.data == "reload_media")
 async def cb_reload_media(callback: CallbackQuery):
-    """Inform user to resend the Instagram link for re-download."""
+    """Inform user to resend the media link for re-download."""
     await callback.answer(
-        "🔄 Qayta yuklash uchun Instagram havolasini yana bir marta yuboring.",
+        "🔄 Qayta yuklash uchun video havolasini yana bir marta yuboring.",
         show_alert=True,
     )
+

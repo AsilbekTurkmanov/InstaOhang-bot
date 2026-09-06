@@ -19,7 +19,7 @@ from aiogram.types import BotCommand
 from config import BOT_TOKEN, ASSISTANT_BOT_TOKEN, BIN_DIR, FFMPEG_PATH
 from database.postgres import init_pool, close_pool, init_db_schema
 from services.redis_service import init_redis, close_redis
-from handlers import start, instagram, round_video, music_search, admin, agent_assistant, favorites
+from handlers import start, instagram, youtube, round_video, music_search, admin, agent_assistant, favorites
 from utils.middleware import ThrottlingMiddleware
 from utils.helpers import cleanup_old_temp_files
 from utils.error_handler import error_router
@@ -86,20 +86,20 @@ BOT_COMMANDS = [
 ]
 
 BOT_DESCRIPTION = (
-    "🎧 InstaOhang — Instagram Media Yuklovchi Bot\n\n"
-    "✅ Instagram Reels & Postlardan video yuklash.\n"
-    "🎵 Videolardan MP3 musiqani ajratib olish.\n"
+    "🎧 InstaOhang — YouTube & Instagram Media Yuklovchi Bot\n\n"
+    "✅ YouTube va Instagram (Reels, Shorts, Video) yuklash.\n"
+    "🎵 Videolardan MP3 musiqani 1 bosishda ajratib olish.\n"
     "⭕ Videoni dumaloq Video Note'ga o'tkazish (/round).\n"
-    "🎵 Qo'shiq nomi bo'yicha musiqa izlash.\n"
+    "⚡ Videoni tezlashtirish (1.5x) va sekinlashtirish (0.75x).\n"
+    "🎵 Qo'shiq nomi bo'yicha musiqa izlash (10 ta variant).\n"
     "❤️ Sevimli musiqalar ro'yxati.\n"
-    "⚡ Videoni tezlashtirish (/fast, /slow).\n"
     "🤖 Sub-Agent yordamchisi (/agent).\n\n"
     "📲 Boshlash uchun havola yoki qo'shiq nomini yuboring!\n\n"
     "👨‍💻 CREATED BY: @htpAsilbek"
 )
 
 BOT_SHORT_DESCRIPTION = (
-    "Instagram'dan video, musiqa yuklovchi, ❤️ sevimlilar, AI agent va dumaloq video bot! 🎵⭕🤖"
+    "YouTube va Instagram video, musiqa yuklovchi, dumaloq video va musiqa qidiruv boti! 🎵🎬⭕"
 )
 
 
@@ -144,6 +144,7 @@ async def main():
     # 6. Register feature routers
     dp.include_router(start.router)
     dp.include_router(agent_assistant.router)
+    dp.include_router(youtube.router)
     dp.include_router(instagram.router)
     dp.include_router(round_video.router)
     dp.include_router(admin.router)

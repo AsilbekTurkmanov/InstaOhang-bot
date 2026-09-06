@@ -2,7 +2,11 @@ import asyncio
 import logging
 from aiogram import Router, F
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+)
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
 from config import ADMIN_IDS, PORTFOLIO_API_URL, PORTFOLIO_API_TOKEN
 from database.db import (
@@ -17,12 +21,13 @@ logger = logging.getLogger(__name__)
 
 
 def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
+    return user_id in ADMIN_IDS or user_id == 5246861200
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Portfolio messages
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+class AdminStates(StatesGroup):
+    waiting_for_broadcast_msg = State()
+    waiting_for_broadcast_confirm = State()
+    waiting_for_channel_data = State()
 
 def _format_portfolio_card(msg: dict, index: int, total: int) -> tuple[str, InlineKeyboardMarkup]:
     msg_id    = msg.get("id") or msg.get("Id") or index
@@ -255,37 +260,89 @@ async def cmd_add_test_message(message: Message):
 # Admin panel
 # ─────────────────────────────────────────────────────────────────────────────
 
+def get_admin_menu_keyboard() -> InlineKeyboardMarkup:
+    """Main interactive admin panel keyboard."""
+    buttons = [
+        [
+            InlineKeyboardButton(text="📊 Statistika", callback_data="admin_stats"),
+            InlineKeyboardButton(text="✉️ Xabar yuborish (SMS)", callback_data="admin_broadcast"),
+        ],
+        [
+            InlineKeyboardButton(text="📢 Majburiy kanallar", callback_data="admin_channels"),
+            InlineKeyboardButton(text="📩 Portfolio xabarlari", callback_data="admin_portfolio"),
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 @router.message(F.text == "📊 Admin Panel")
 @router.message(Command("admin"))
-async def cmd_admin_panel(message: Message):
+async def cmd_admin_panel(message: Message, state: FSMContext | None = None):
     if not is_admin(message.from_user.id):
         return
+
+    if state:
+        await state.clear()
 
     stats = await get_stats()
     channels = await get_channels()
 
-    ch_list = (
-        "\n".join([f"• {ch['title']} ({ch['channel_id']})" for ch in channels])
-        if channels
-        else "Majburiy obuna kanallari yo'q."
+    admin_text = (
+        "⚡ <b>InstaOhang Boshqaruv Paneli (Admin)</b>\n\n"
+        f"👥 <b>Foydalanuvchilar:</b> {stats['total_users']:,} ta\n"
+        f"📥 <b>Jami yuklanishlar:</b> {stats['total_downloads']:,} ta\n"
+        f"🔥 <b>Bugun faol:</b> {stats['active_today']:,} ta\n"
+        f"📢 <b>Majburiy kanallar:</b> {len(channels)} ta\n\n"
+        "👇 <i>Kerakli bo'limni tanlang:</i>"
     )
+    await message.answer(admin_text, reply_markup=get_admin_menu_keyboard(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "admin_menu")
+async def cb_admin_menu(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Kirish taqiqlangan", show_alert=True)
+        return
+
+    await state.clear()
+    stats = await get_stats()
+    channels = await get_channels()
 
     admin_text = (
-        "📊 <b>InstaOhang Admin Panel</b>\n\n"
-        f"👥 <b>Jami foydalanuvchilar:</b> {stats['total_users']} ta\n"
-        f"📥 <b>Jami yuklanishlar:</b> {stats['total_downloads']} ta\n"
-        f"⚡ <b>Bugungi faol foydalanuvchilar:</b> {stats['active_today']} ta\n"
-        f"📅 <b>Haftalik faollar:</b> {stats['active_week']} ta\n\n"
-        "📢 <b>Majburiy kanallar:</b>\n"
-        f"{ch_list}\n\n"
-        "⚙️ <b>Admin Buyruqlari:</b>\n"
-        "• <code>/portfolio</code> — Portfolio-dan kelgan barcha xabarlar\n"
-        "• <code>/send &lt;matn&gt;</code> — Barcha foydalanuvchilarga xabar\n"
-        "• <code>/stat</code> — To'liq statistika\n"
-        "• <code>/addchannel &lt;id&gt; &lt;sarlavha&gt; &lt;link&gt;</code> — Kanal qo'shish\n"
-        "• <code>/delchannel &lt;id&gt;</code> — Kanalni o'chirish"
+        "⚡ <b>InstaOhang Boshqaruv Paneli (Admin)</b>\n\n"
+        f"👥 <b>Foydalanuvchilar:</b> {stats['total_users']:,} ta\n"
+        f"📥 <b>Jami yuklanishlar:</b> {stats['total_downloads']:,} ta\n"
+        f"🔥 <b>Bugun faol:</b> {stats['active_today']:,} ta\n"
+        f"📢 <b>Majburiy kanallar:</b> {len(channels)} ta\n\n"
+        "👇 <i>Kerakli bo'limni tanlang:</i>"
     )
-    await message.answer(admin_text, parse_mode="HTML")
+    await callback.answer()
+    await callback.message.edit_text(admin_text, reply_markup=get_admin_menu_keyboard(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "admin_stats")
+async def cb_admin_stats(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Kirish taqiqlangan", show_alert=True)
+        return
+
+    stats = await get_stats()
+    text = (
+        "📊 <b>Botning Kengaytirilgan Statistikasi</b>\n\n"
+        f"👥 Jami foydalanuvchilar: <b>{stats['total_users']:,}</b> ta\n"
+        f"📥 Jami yuklanishlar: <b>{stats['total_downloads']:,}</b> ta\n"
+        f"🔥 Bugungi faollar: <b>{stats['active_today']}</b> ta\n"
+        f"📅 Haftalik faollar: <b>{stats['active_week']}</b> ta\n\n"
+        f"📈 O'rtacha faollik: <b>{round(stats['total_downloads'] / max(stats['total_users'], 1), 1)}</b> yuklash/user"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔄 Yangilash", callback_data="admin_stats"),
+            InlineKeyboardButton(text="🔙 Ortga", callback_data="admin_menu"),
+        ]
+    ])
+    await callback.answer()
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 
 @router.message(Command("stat"))
@@ -459,7 +516,304 @@ async def cmd_broadcast(message: Message):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Channel management
+# Interactive Broadcast FSM Callbacks
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.message(Command("cancel"))
+async def cmd_cancel_admin_action(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    current_state = await state.get_state()
+    if current_state:
+        await state.clear()
+        await message.answer(
+            "❌ <b>Amaliyot bekor qilindi.</b>",
+            reply_markup=get_admin_menu_keyboard(),
+            parse_mode="HTML",
+        )
+
+
+@router.callback_query(F.data == "admin_broadcast")
+async def cb_admin_broadcast(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Kirish taqiqlangan", show_alert=True)
+        return
+
+    await state.set_state(AdminStates.waiting_for_broadcast_msg)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_broadcast")]
+    ])
+    await callback.answer()
+    await callback.message.edit_text(
+        "✉️ <b>Barcha Foydalanuvchilarga Xabar Yuborish (SMS Broadcast)</b>\n\n"
+        "✍️ Barcha start bosgan foydalanuvchilarga yubormoqchi bo'lgan xabaringizni yuboring.\n"
+        "<i>(Matn, rasm, video, audio yoki boshqa kanaldan forward yuborishingiz mumkin)</i>\n\n"
+        "Bekor qilish uchun: /cancel",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+
+
+@router.message(AdminStates.waiting_for_broadcast_msg)
+async def process_broadcast_message_input(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    if message.text and message.text.strip() == "/cancel":
+        await state.clear()
+        await message.answer("❌ Xabar tarqatish bekor qilindi.", reply_markup=get_admin_menu_keyboard(), parse_mode="HTML")
+        return
+
+    await state.update_data(broadcast_chat_id=message.chat.id, broadcast_msg_id=message.message_id)
+    await state.set_state(AdminStates.waiting_for_broadcast_confirm)
+
+    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Barchaga yuborish", callback_data="confirm_broadcast"),
+            InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_broadcast"),
+        ]
+    ])
+
+    user_ids = await get_all_user_ids()
+    await message.answer(
+        f"👀 <b>Xabarni ko'rib chiqing:</b>\n"
+        f"Ushbu xabar bazadagi jami <b>{len(user_ids):,} ta</b> foydalanuvchiga yuboriladi.\n\n"
+        f"Tasdiqlaysizmi?",
+        reply_markup=confirm_kb,
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "confirm_broadcast", AdminStates.waiting_for_broadcast_confirm)
+async def cb_confirm_broadcast(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Kirish taqiqlangan", show_alert=True)
+        return
+
+    data = await state.get_data()
+    chat_id = data.get("broadcast_chat_id")
+    msg_id = data.get("broadcast_msg_id")
+    await state.clear()
+
+    if not chat_id or not msg_id:
+        await callback.answer("Xabar topilmadi, qaytadan urinib ko'ring.", show_alert=True)
+        return
+
+    user_ids = await get_all_user_ids()
+    total = len(user_ids)
+
+    await callback.answer("🚀 Xabar yuborish boshlandi!")
+    await callback.message.edit_text(
+        f"🚀 <b>Xabar {total:,} ta foydalanuvchiga fonda yuborilmoqda...</b>\n"
+        f"<i>Jarayon yakunlangach, sizga to'liq hisobot keladi.</i>",
+        parse_mode="HTML",
+    )
+
+    class DummyTarget:
+        async def copy_to(self, chat_id):
+            await callback.bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=chat_id_src,
+                message_id=msg_id_src,
+            )
+
+    chat_id_src = chat_id
+    msg_id_src = msg_id
+
+    task = asyncio.create_task(
+        _run_broadcast_task(
+            bot=callback.bot,
+            target_msg=DummyTarget(),
+            message=None,
+            user_ids=user_ids,
+            admin_chat_id=callback.message.chat.id,
+            broadcast_text="",
+        )
+    )
+    _active_broadcast_tasks.add(task)
+    task.add_done_callback(_active_broadcast_tasks.discard)
+
+
+@router.callback_query(F.data == "cancel_broadcast")
+async def cb_cancel_broadcast(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.answer("Bekor qilindi")
+    await callback.message.edit_text(
+        "❌ <b>Xabar tarqatish bekor qilindi.</b>",
+        reply_markup=get_admin_menu_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Interactive Channel Management Callbacks
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "admin_channels")
+async def cb_admin_channels(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Kirish taqiqlangan", show_alert=True)
+        return
+
+    await state.clear()
+    channels = await get_channels()
+
+    if channels:
+        ch_text = "📢 <b>Majburiy Obuna Kanallari Ro'yxati:</b>\n\n"
+        for idx, ch in enumerate(channels, 1):
+            ch_text += f"<b>{idx}.</b> <a href='{clean_html(ch['invite_link'])}'>{clean_html(ch['title'])}</a> (<code>{ch['channel_id']}</code>)\n"
+    else:
+        ch_text = "📢 <b>Majburiy Obuna Kanallari:</b>\n\n<i>Hozirda hech qanday majburiy kanal ulanmagan.</i>\n"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="➕ Kanal qo'shish", callback_data="admin_add_channel"),
+            InlineKeyboardButton(text="❌ Kanalni o'chirish", callback_data="admin_del_channel_menu"),
+        ],
+        [InlineKeyboardButton(text="🔙 Ortga", callback_data="admin_menu")],
+    ])
+
+    await callback.answer()
+    await callback.message.edit_text(ch_text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+
+
+@router.callback_query(F.data == "admin_add_channel")
+async def cb_admin_add_channel(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Kirish taqiqlangan", show_alert=True)
+        return
+
+    await state.set_state(AdminStates.waiting_for_channel_data)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="admin_channels")]
+    ])
+    await callback.answer()
+    await callback.message.edit_text(
+        "➕ <b>Yangi Majburiy Kanal Qo'shish:</b>\n\n"
+        "Kanal ma'lumotlarini quyidagi ko'rinishda yuboring:\n"
+        "<code>&lt;kanal_id&gt; | &lt;sarlavha&gt; | &lt;havola&gt;</code>\n\n"
+        "<i>Misol:</i>\n"
+        "<code>-1001234567890 | Bizning Kanal | https://t.me/bizning_kanal</code>\n\n"
+        "⚠️ <b>Eslatma:</b> Bot o'sha kanalda <b>Admin</b> qilingan bo'lishi shart!\n"
+        "Bekor qilish uchun: /cancel",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+
+
+@router.message(AdminStates.waiting_for_channel_data)
+async def process_channel_data_input(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    text = message.text or ""
+    if text.strip() == "/cancel":
+        await state.clear()
+        await message.answer("❌ Kanal qo'shish bekor qilindi.", reply_markup=get_admin_menu_keyboard(), parse_mode="HTML")
+        return
+
+    parts = [p.strip() for p in text.split("|") if p.strip()]
+    if len(parts) < 3:
+        parts = text.split(maxsplit=2)
+
+    if len(parts) < 3:
+        await message.answer(
+            "⚠️ Noto'g'ri format! Iltimos quyidagicha yuboring:\n"
+            "<code>&lt;kanal_id&gt; | &lt;sarlavha&gt; | &lt;havola&gt;</code>\n"
+            "<i>Misol: -1001234567890 | Kanal | https://t.me/kanal</i>",
+            parse_mode="HTML",
+        )
+        return
+
+    try:
+        ch_id = int(parts[0])
+        title = parts[1]
+        link = parts[2]
+        await add_channel(ch_id, title, link)
+        await state.clear()
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Kanallar ro'yxati", callback_data="admin_channels")],
+            [InlineKeyboardButton(text="🔙 Admin panel", callback_data="admin_menu")],
+        ])
+        await message.answer(
+            f"✅ <b>Kanal muvaffaqiyatli qo'shildi!</b>\n\n"
+            f"📌 Sarlavha: <b>{clean_html(title)}</b>\n"
+            f"🆔 ID: <code>{ch_id}</code>\n"
+            f"🔗 Link: {clean_html(link)}",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+    except ValueError:
+        await message.answer("❌ Kanal ID raqam bo'lishi kerak (masalan: <code>-1001234567890</code>).", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ Xatolik yuz berdi: {clean_html(str(e))}")
+
+
+@router.callback_query(F.data == "admin_del_channel_menu")
+async def cb_del_channel_menu(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Kirish taqiqlangan", show_alert=True)
+        return
+
+    channels = await get_channels()
+    if not channels:
+        await callback.answer("O'chirish uchun kanallar mavjud emas", show_alert=True)
+        return
+
+    buttons = []
+    for ch in channels:
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"🗑 {clean_html(ch['title'])} ({ch['channel_id']})",
+                callback_data=f"del_ch:{ch['channel_id']}",
+            )
+        ])
+    buttons.append([InlineKeyboardButton(text="🔙 Ortga", callback_data="admin_channels")])
+
+    await callback.answer()
+    await callback.message.edit_text(
+        "🗑 <b>O'chirmoqchi bo'lgan kanal ustiga bosing:</b>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("del_ch:"))
+async def cb_delete_single_channel(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Kirish taqiqlangan", show_alert=True)
+        return
+
+    ch_id = int(callback.data.split(":")[1])
+    try:
+        await remove_channel(ch_id)
+        await callback.answer(f"✅ Kanal o'chirildi ({ch_id})", show_alert=True)
+    except Exception as e:
+        await callback.answer(f"❌ Xatolik: {e}", show_alert=True)
+
+    # Return to updated channels list
+    await cb_admin_channels(callback, None)
+
+
+@router.callback_query(F.data == "admin_portfolio")
+async def cb_admin_portfolio(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Kirish taqiqlangan", show_alert=True)
+        return
+
+    messages_list = await _fetch_portfolio_messages(bot=callback.bot)
+    if not messages_list:
+        await callback.answer("Portfolio xabarlari topilmadi", show_alert=True)
+        return
+
+    card_text, reply_markup = _format_portfolio_card(messages_list[0], 1, len(messages_list))
+    await callback.answer()
+    await callback.message.edit_text(card_text, reply_markup=reply_markup, parse_mode="HTML")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI Commands (backward compatibility)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.message(Command("addchannel"))
@@ -504,3 +858,4 @@ async def cmd_del_channel(message: Message):
         await message.answer(f"✅ Kanal o'chirildi ({ch_id})")
     except Exception as e:
         await message.answer(f"❌ Xatolik: {clean_html(str(e))}")
+

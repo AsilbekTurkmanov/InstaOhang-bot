@@ -51,12 +51,11 @@ async def cmd_start(message: Message):
             f"👋 Assalomu alaykum, <b>{user.full_name}</b>!\n\n"
             f"🎧 <b>InstaOhang Bot</b>ga xush kelibsiz!\n\n"
             f"⚡ <b>Imkoniyatlar:</b>\n"
-            f"1️⃣ Instagram-dan video yoki Reels havolasini (link) yuboring — bot darhol yuklab beradi.\n"
-            f"2️⃣ Yuklangan videoga javoban <code>/round</code> deb yozing yoki tugmani bosib ⭕ <b>Dumaloq Video Note</b>ga aylantiring!\n"
-            f"3️⃣ Videolardan 🎵 MP3 musiqasini 1 bosishda ajratib oling.\n"
-            f"4️⃣ Qo'shiq nomi yoki xonanda ismini shunchaki matn sifatida yuboring va musiqani oling.\n"
-            f"5️⃣ ❤️ <b>Sevimlilar</b> tugmasi orqali o'zingizga yoqqan musiqalarni saqlang!\n\n"
-            f"🔗 <i>Boshlash uchun Instagram havolasi yoki qo'shiq nomini yuboring!</i>"
+            f"1️⃣ <b>YouTube & Instagram</b> havolasini yuboring — bot videoni darhol yuklab beradi.\n"
+            f"2️⃣ Video tagidagi tugmalar orqali <b>🎵 MP3 Musiqasini olish</b>, <b>⭕ Dumaloq Video</b>ga aylantirish, <b>⏩ 1.5x Tezlashtirish</b> yoki <b>⏪ 0.75x Sekinlashtirish</b> imkoniyati!\n"
+            f"3️⃣ Qo'shiq nomi yoki xonanda ismini yuboring — bot 10 ta variantda qidirib topib beradi.\n"
+            f"4️⃣ ❤️ <b>Sevimlilar</b> tugmasi orqali o'zingizga yoqqan musiqalarni saqlang!\n\n"
+            f"🔗 <i>Boshlash uchun YouTube/Instagram havolasi yoki qo'shiq nomini yuboring!</i>"
         )
         await message.answer(
             welcome_text,

@@ -860,3 +860,114 @@ def _normalize_url(url: str) -> str:
     url = re.sub(r"https?://www\.", "https://", url)  # normalize www.
     url = re.sub(r"https?://", "https://", url)  # normalize http → https
     return url.lower()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Media origin tracker (enables recovery if Telegram getFile exceeds 20MB)
+# ─────────────────────────────────────────────────────────────────────────────
+_MEDIA_ORIGINS: dict[str, str] = {}
+
+
+def set_media_origin(unique_id: str, origin: str) -> None:
+    """Remembers the original URL/ID for a Telegram file_unique_id."""
+    if unique_id and origin:
+        _MEDIA_ORIGINS[unique_id] = origin
+        if len(_MEDIA_ORIGINS) > 5000:
+            keys = list(_MEDIA_ORIGINS.keys())[:1000]
+            for k in keys:
+                _MEDIA_ORIGINS.pop(k, None)
+
+
+def get_media_origin(unique_id: str) -> str | None:
+    """Returns stored origin URL/ID for a Telegram file_unique_id."""
+    return _MEDIA_ORIGINS.get(unique_id)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# YouTube Video Download (Full MP4 video)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _do_youtube_video_download(url_or_id: str) -> dict:
+    """Blocking YouTube video download (runs in thread pool)."""
+    from services.youtube_parser import parse_youtube_url
+    parsed = parse_youtube_url(url_or_id)
+    video_id = parsed.video_id if parsed else url_or_id.strip()
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    unique_id = str(uuid.uuid4())[:8]
+    output_template = os.path.join(DOWNLOAD_DIR, f"yt_vid_{unique_id}.%(ext)s")
+
+    opts = get_yt_dlp_options({
+        "format": "18/22/bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best[height<=720]/best",
+        "outtmpl": output_template,
+        "merge_output_format": "mp4",
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+    })
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ytdl:
+            info = ytdl.extract_info(url, download=True)
+            title = info.get("title") or "YouTube Video"
+            author = info.get("uploader") or info.get("channel") or "YouTube"
+            duration = int(info.get("duration") or 0)
+            thumbnail = info.get("thumbnail")
+
+            # Locate downloaded file
+            prefix = f"yt_vid_{unique_id}"
+            found_fp = None
+            for f in os.listdir(DOWNLOAD_DIR):
+                if f.startswith(prefix):
+                    candidate = os.path.join(DOWNLOAD_DIR, f)
+                    if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
+                        found_fp = candidate
+                        break
+
+            if not found_fp or not os.path.exists(found_fp):
+                raise RuntimeError("Video fayli saqlanmadi.")
+
+            return {
+                "type": "video",
+                "filepath": found_fp,
+                "title": title,
+                "author": author,
+                "duration": duration,
+                "thumbnail": thumbnail,
+                "id": video_id,
+            }
+    except Exception as e:
+        logger.error(f"[YouTube Video] Download failed: {e}")
+        raise RuntimeError(f"YouTube videosini yuklab bo'lmadi: {e}")
+
+
+async def download_youtube_video(url_or_id: str) -> dict:
+    """
+    Downloads YouTube video as MP4 (async, semaphore-gated, deduplicated).
+    Timeout: DOWNLOAD_TIMEOUT_SEC.
+    """
+    canonical = _normalize_url(url_or_id)
+    loop = asyncio.get_running_loop()
+    if canonical in _IN_FLIGHT:
+        logger.info(f"[Dedup] Joining in-flight YouTube download for: {canonical}")
+        return await _IN_FLIGHT[canonical]
+
+    fut: asyncio.Future = loop.create_future()
+    _IN_FLIGHT[canonical] = fut
+
+    try:
+        async with DOWNLOAD_SEMAPHORE:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_do_youtube_video_download, url_or_id),
+                timeout=DOWNLOAD_TIMEOUT_SEC,
+            )
+            fut.set_result(result)
+            return result
+    except asyncio.TimeoutError:
+        exc = RuntimeError(f"YouTube yuklab olish vaqti tugadi (>{DOWNLOAD_TIMEOUT_SEC}s).")
+        fut.set_exception(exc)
+        raise exc
+    except Exception as exc:
+        if not fut.done():
+            fut.set_exception(exc)
+        raise
+    finally:
+        _IN_FLIGHT.pop(canonical, None)
+
