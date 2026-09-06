@@ -303,91 +303,7 @@ async def save_processing_cache(source_file_unique_id: str, operation: str, tele
         logger.warning(f"save_processing_cache error: {e}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Portfolio messages
-# ─────────────────────────────────────────────────────────────────────────────
 
-async def save_portfolio_message(
-    name: str,
-    email: str,
-    subject: str,
-    message: str,
-    phone: Optional[str] = None,
-    ip_address: Optional[str] = None,
-    status: str = "new",
-    telegram_id: Optional[int] = None,
-) -> None:
-    pool = get_pool()
-    try:
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO portfolio_messages
-                    (name, email, phone, subject, message, ip_address, status, telegram_id)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                """,
-                name, email, phone, subject, message, ip_address, status, telegram_id,
-            )
-    except Exception as e:
-        logger.error(f"save_portfolio_message error: {e}")
-
-
-async def upsert_portfolio_message(
-    name: str,
-    email: str,
-    subject: str,
-    message: str,
-    phone: Optional[str] = None,
-    ip_address: Optional[str] = None,
-    status: str = "new",
-    telegram_id: Optional[int] = None,
-) -> bool:
-    """
-    Saves portfolio message to PostgreSQL if not already present.
-    Uses atomic INSERT...ON CONFLICT to prevent race conditions.
-    Returns True if a new message was inserted, False if already existed.
-    """
-    if not (name or email or message):
-        return False
-    pool = get_pool()
-    try:
-        async with pool.acquire() as conn:
-            # Atomic upsert: insert only if (name, email, message) combo is new
-            result = await conn.execute(
-                """
-                INSERT INTO portfolio_messages
-                    (name, email, phone, subject, message, ip_address, status, telegram_id)
-                SELECT $1, $2, $3, $4, $5, $6, $7, $8
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM portfolio_messages
-                    WHERE name = $1 AND email = $2 AND message = $5
-                )
-                """,
-                name, email, phone, subject, message, ip_address, status, telegram_id,
-            )
-            # asyncpg returns 'INSERT 0 N' — N=1 means inserted, N=0 means existed
-            return result == "INSERT 0 1"
-    except Exception as e:
-        logger.error(f"upsert_portfolio_message error: {e}")
-        return False
-
-
-async def get_portfolio_messages(limit: int = 10000) -> list[dict]:
-    """Returns all portfolio messages ordered by id ASC (from ID #1 up to N)."""
-    pool = get_pool()
-    try:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT id, name, email, phone, subject, message, ip_address, status, telegram_id, created_at
-                FROM portfolio_messages ORDER BY id ASC LIMIT $1
-                """,
-                limit,
-            )
-        return [dict(row) for row in rows]
-    except Exception as e:
-        logger.error(f"get_portfolio_messages error: {e}")
-        return []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -449,6 +365,24 @@ async def get_music_by_file_unique_id(file_unique_id: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+async def get_music_by_file_id(file_id: str) -> Optional[dict]:
+    """Returns a music record by Telegram file_id."""
+    if not file_id:
+        return None
+    pool = get_pool()
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, title, artist, file_id, file_unique_id, views FROM music "
+                "WHERE file_id = $1 AND is_active = TRUE",
+                file_id,
+            )
+        return dict(row) if row else None
+    except Exception as e:
+        logger.warning(f"get_music_by_file_id error: {e}")
+        return None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Favorites
 # ─────────────────────────────────────────────────────────────────────────────
@@ -456,45 +390,73 @@ async def get_music_by_file_unique_id(file_unique_id: str) -> Optional[dict]:
 async def add_favorite(user_id: int, music_id: int) -> bool:
     """
     Adds a music track to user's favorites.
-    Returns True if added, False if already favorited (duplicate).
-    Only catches asyncpg.UniqueViolationError — other errors propagate.
+    Ensures user exists in users table first to prevent foreign key violation.
+    Returns True if added, False if already favorited (duplicate) or error.
     """
     pool = get_pool()
     try:
         async with pool.acquire() as conn:
+            # 1. Ensure user exists in users table (prevents FK violation)
+            await conn.execute(
+                """
+                INSERT INTO users (telegram_id, first_name)
+                VALUES ($1, '')
+                ON CONFLICT (telegram_id) DO NOTHING
+                """,
+                user_id,
+            )
+
+            # 2. Verify music exists
+            music_exists = await conn.fetchval(
+                "SELECT 1 FROM music WHERE id = $1 AND is_active = TRUE",
+                music_id,
+            )
+            if not music_exists:
+                logger.warning(f"add_favorite: music_id {music_id} not found or inactive")
+                return False
+
+            # 3. Add to favorites
             await conn.execute(
                 "INSERT INTO favorites (user_id, music_id) VALUES ($1, $2)",
                 user_id, music_id,
             )
         return True
     except asyncpg.UniqueViolationError:
-        # Expected: user already added this track to favorites
+        # User already added this track to favorites
         return False
-    except asyncpg.PostgresError as e:
+    except Exception as e:
         logger.error(f"add_favorite DB error (user={user_id}, music={music_id}): {e}")
-        raise
+        return False
 
 
 async def remove_favorite(user_id: int, music_id: int) -> bool:
     """Removes a music track from user's favorites. Returns True if removed."""
     pool = get_pool()
-    async with pool.acquire() as conn:
-        result = await conn.execute(
-            "DELETE FROM favorites WHERE user_id = $1 AND music_id = $2",
-            user_id, music_id,
-        )
-    return result == "DELETE 1"
+    try:
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM favorites WHERE user_id = $1 AND music_id = $2",
+                user_id, music_id,
+            )
+        return result == "DELETE 1"
+    except Exception as e:
+        logger.error(f"remove_favorite DB error (user={user_id}, music={music_id}): {e}")
+        return False
 
 
 async def is_favorite(user_id: int, music_id: int) -> bool:
     """Checks if a music track is in user's favorites."""
     pool = get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT 1 FROM favorites WHERE user_id = $1 AND music_id = $2",
-            user_id, music_id,
-        )
-    return row is not None
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM favorites WHERE user_id = $1 AND music_id = $2",
+                user_id, music_id,
+            )
+        return row is not None
+    except Exception as e:
+        logger.error(f"is_favorite DB error (user={user_id}, music={music_id}): {e}")
+        return False
 
 
 async def get_user_favorites(

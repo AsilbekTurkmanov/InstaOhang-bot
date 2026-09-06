@@ -82,7 +82,6 @@ def get_main_reply_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     if is_admin:
         keyboard.append([
             KeyboardButton(text="📊 Admin Panel"),
-            KeyboardButton(text="📩 Portfolio xabarlari"),
         ])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 

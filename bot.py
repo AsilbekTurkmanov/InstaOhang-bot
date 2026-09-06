@@ -54,18 +54,7 @@ async def periodic_temp_cleanup():
         await asyncio.sleep(1800)
 
 
-async def periodic_portfolio_watcher(bot: Bot):
-    """
-    Periodically checks portfolio website API every 15 seconds for new contact messages,
-    saves them to PostgreSQL, and sends instant Telegram push notifications to admins.
-    """
-    from handlers.admin import check_and_notify_new_portfolio_messages
-    while True:
-        try:
-            await check_and_notify_new_portfolio_messages(bot)
-        except Exception as e:
-            logger.debug(f"Periodic portfolio watcher info: {e}")
-        await asyncio.sleep(15)
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -82,7 +71,6 @@ BOT_COMMANDS = [
     BotCommand(command="agent",     description="AI Agent yordamchisi 🤖"),
     BotCommand(command="users",     description="Foydalanuvchilar soni 👥"),
     BotCommand(command="admin",     description="Admin panel 📊"),
-    BotCommand(command="portfolio", description="Portfolio xabarlari (Admin) 📩"),
 ]
 
 BOT_DESCRIPTION = (
@@ -143,11 +131,11 @@ async def main():
 
     # 6. Register feature routers
     dp.include_router(start.router)
+    dp.include_router(admin.router)
     dp.include_router(agent_assistant.router)
     dp.include_router(youtube.router)
     dp.include_router(instagram.router)
     dp.include_router(round_video.router)
-    dp.include_router(admin.router)
     dp.include_router(favorites.router)
     dp.include_router(music_search.router)  # Last: catches all non-command text
 
@@ -166,8 +154,7 @@ async def main():
     bot_info = await bot.get_me()
     logger.info(f"✅ Bot launched as @{bot_info.username} (ID: {bot_info.id})")
 
-    # Start periodic portfolio watcher task (checks website contact API and pushes notifications to admin)
-    watcher_task = asyncio.create_task(periodic_portfolio_watcher(bot))
+
 
     # 9. Optional secondary (assistant) bot
     bots_to_poll = [bot]
@@ -191,12 +178,10 @@ async def main():
         await dp.start_polling(*bots_to_poll)
     finally:
         cleanup_task.cancel()
-        watcher_task.cancel()
-        for t in (cleanup_task, watcher_task):
-            try:
-                await t
-            except asyncio.CancelledError:
-                pass
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
         for b in bots_to_poll:
             await b.session.close()
         await close_redis()

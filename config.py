@@ -49,11 +49,7 @@ AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
 AI_MODEL = os.getenv("AI_MODEL", "gpt-4o-mini").strip()
 AI_PROVIDER = os.getenv("AI_PROVIDER", "openai").strip()
 
-# ─────────────────────────────────────────────
-# Portfolio API Integration
-# ─────────────────────────────────────────────
-PORTFOLIO_API_URL = os.getenv("PORTFOLIO_API_URL", "http://localhost:5056/api/contact").strip()
-PORTFOLIO_API_TOKEN = os.getenv("PORTFOLIO_API_TOKEN", "").strip()
+
 
 # ─────────────────────────────────────────────
 # Directory Paths

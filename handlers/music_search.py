@@ -1,7 +1,9 @@
 import os
+import re
 import logging
 from aiogram import Router, F
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     Message, CallbackQuery, FSInputFile,
     InlineKeyboardMarkup, InlineKeyboardButton,
@@ -15,6 +17,7 @@ from config import DOWNLOAD_DIR
 from database.db import (
     get_cached_media, save_cached_media,
     get_or_create_music, increment_music_views,
+    is_favorite, get_music_by_file_id,
 )
 from utils.helpers import (
     safe_remove_files, check_user_subscriptions, get_subscription_keyboard,
@@ -25,11 +28,17 @@ from utils.performance import measure_time
 router = Router()
 logger = logging.getLogger(__name__)
 
+# General URL pattern for catching any links
+URL_REGEX = re.compile(
+    r"(https?://\S+|www\.\S+|t\.me/\S+|telegram\.me/\S+)",
+    re.IGNORECASE,
+)
+
 # Buttons that should NOT trigger a music search
 MENU_BUTTONS = {
     "🎵 Musiqa izlash", "ℹ️ Bot haqida", "⭕ Dumaloq Video haqida",
     "🤖 AI Agent", "⚙️ AI Agent-Info", "📊 Admin Panel",
-    "📩 Portfolio xabarlari", "❤️ Sevimlilar",
+    "❤️ Sevimlilar",
 }
 
 
@@ -46,13 +55,16 @@ def build_music_result_keyboard(results: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def build_audio_action_keyboard(music_id: int) -> InlineKeyboardMarkup:
-    """Keyboard attached to sent audio: add-to-favorites button."""
+def build_audio_action_keyboard(music_id: int, is_fav: bool = False) -> InlineKeyboardMarkup:
+    """Keyboard attached to sent audio: add/remove favorites button."""
+    if is_fav:
+        text = "💔 Sevimlilardan o'chirish"
+        cb = f"fav_remove_track:{music_id}"
+    else:
+        text = "❤️ Sevimlilar ro'yxatiga qo'shish"
+        cb = f"fav_add:{music_id}"
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(
-            text="❤️ Sevimlilar ro'yxatiga qo'shish",
-            callback_data=f"fav_add:{music_id}",
-        )
+        InlineKeyboardButton(text=text, callback_data=cb)
     ]])
 
 
@@ -126,11 +138,30 @@ async def cb_download_music(callback: CallbackQuery):
     if cached:
         try:
             await callback.answer("⚡ Keshdan yuklanmoqda...")
+            music_record = await get_music_by_file_id(cached["file_id"])
+            music_id = music_record["id"] if music_record else None
+            if not music_id:
+                try:
+                    music_id = await get_or_create_music(
+                        title=cached.get("caption") or "Musiqa",
+                        artist="",
+                        file_id=cached["file_id"],
+                        file_unique_id=f"yt_{video_id}",
+                    )
+                except Exception:
+                    music_id = None
+
+            is_fav = await is_favorite(user_id, music_id) if music_id else False
+            reply_markup = build_audio_action_keyboard(music_id, is_fav=is_fav) if music_id else None
+
             await callback.message.answer_audio(
                 audio=cached["file_id"],
                 caption="🎧 <b>InstaOhang Music Engine</b>\n🤖 @InstaOhang_bot",
+                reply_markup=reply_markup,
                 parse_mode="HTML",
             )
+            if music_id:
+                await increment_music_views(music_id)
             return
         except Exception as cache_err:
             logger.warning(f"Cached audio send failed: {cache_err}")
@@ -183,11 +214,9 @@ async def cb_download_music(callback: CallbackQuery):
                 )
                 await increment_music_views(music_id)
 
-                # Edit caption to add favorites button
-                await sent_audio.edit_caption(
-                    caption="🎧 <b>InstaOhang Music Engine</b>\n🤖 @InstaOhang_bot",
-                    reply_markup=build_audio_action_keyboard(music_id),
-                    parse_mode="HTML",
+                is_fav = await is_favorite(user_id, music_id)
+                await sent_audio.edit_reply_markup(
+                    reply_markup=build_audio_action_keyboard(music_id, is_fav=is_fav)
                 )
             except Exception as db_err:
                 logger.warning(f"Could not save music to DB or add fav button: {db_err}")
@@ -202,8 +231,10 @@ async def cb_download_music(callback: CallbackQuery):
         )
 
 
+
 @router.message(F.text == "🎵 Musiqa izlash")
-async def music_btn_prompt(message: Message):
+async def music_btn_prompt(message: Message, state: FSMContext):
+    await state.clear()
     await message.answer(
         "🎵 <b>Musiqa izlash uchun:</b>\n\n"
         "Shunchaki qo'shiq nomini yoki xonanda ismini matn ko'rinishida yuboring!\n"
@@ -213,7 +244,8 @@ async def music_btn_prompt(message: Message):
 
 
 @router.message(Command("music"))
-async def cmd_music_search(message: Message):
+async def cmd_music_search(message: Message, state: FSMContext):
+    await state.clear()
     query = message.text.replace("/music", "").strip()
     if not query:
         await message.answer(
@@ -221,17 +253,53 @@ async def cmd_music_search(message: Message):
             parse_mode="HTML",
         )
         return
+    if URL_REGEX.search(query):
+        await message.answer(
+            "⚠️ Musiqa qidirish uchun havola emas, qo'shiq nomi yoki ijrochi ismini yozing!\n"
+            "<i>Misol:</i> <code>Konsta O'zbekiston</code>",
+            parse_mode="HTML",
+        )
+        return
     await process_music_search(message, query)
 
 
-@router.message(F.text & ~F.text.startswith("/"))
-async def text_music_search(message: Message):
+@router.message(StateFilter(None), F.text & ~F.text.startswith("/"))
+async def text_music_search(message: Message, state: FSMContext):
     query = message.text.strip()
     if not query or query in MENU_BUTTONS:
         return
-    # Do not treat media URLs as music search queries
-    if INSTAGRAM_REGEX.search(query) or YOUTUBE_REGEX.search(query):
+
+    # Check if user is in an active state
+    current_state = await state.get_state()
+    if current_state is not None:
         return
+
+    # Check if text contains ANY URL / link
+    if URL_REGEX.search(query):
+        # 1. Instagram link
+        if INSTAGRAM_REGEX.search(query):
+            from handlers.instagram import handle_instagram_link
+            await handle_instagram_link(message)
+            return
+
+        # 2. YouTube link
+        if YOUTUBE_REGEX.search(query):
+            from handlers.youtube import handle_youtube_link
+            await handle_youtube_link(message)
+            return
+
+        # 3. Other link: Do NOT search for music!
+        await message.answer(
+            "⚠️ <b>Ushbu havola qo'llab-quvvatlanmaydi!</b>\n\n"
+            "Bot faqat <b>Instagram</b> va <b>YouTube</b> havolalaridan video va audio yuklab bera oladi.\n\n"
+            "🎵 <b>Musiqa izlash uchun:</b>\n"
+            "Havola o'rniga qo'shiq nomi yoki xonanda ismini yozing.\n"
+            "<i>Misol:</i> <code>Konsta O'zbekiston</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    # Normal text query -> Search music
     await process_music_search(message, query)
 
 

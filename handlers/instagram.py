@@ -290,6 +290,8 @@ async def cb_extract_mp3(callback: CallbackQuery):
                 try:
                     m_id = await get_or_create_music(title, performer, sent_audio.audio.file_id, sent_audio.audio.file_unique_id)
                     await increment_music_views(m_id)
+                    from handlers.music_search import build_audio_action_keyboard
+                    await sent_audio.edit_reply_markup(reply_markup=build_audio_action_keyboard(m_id, is_fav=False))
                 except Exception:
                     pass
 
@@ -319,6 +321,13 @@ async def cb_extract_mp3(callback: CallbackQuery):
         )
         if sent_audio and sent_audio.audio:
             await save_processing_cache(unique_id, "audio", sent_audio.audio.file_id)
+            try:
+                m_id = await get_or_create_music("Audio Track", "", sent_audio.audio.file_id, sent_audio.audio.file_unique_id)
+                await increment_music_views(m_id)
+                from handlers.music_search import build_audio_action_keyboard
+                await sent_audio.edit_reply_markup(reply_markup=build_audio_action_keyboard(m_id, is_fav=False))
+            except Exception:
+                pass
 
         await status_msg.delete()
         safe_remove_files(download_path, mp3_path)

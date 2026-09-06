@@ -160,27 +160,6 @@ async def init_db_schema() -> None:
                 )
             """)
 
-            # ─── Portfolio messages ──────────────────────────────────────────
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS portfolio_messages (
-                    id          BIGSERIAL PRIMARY KEY,
-                    name        TEXT,
-                    email       TEXT,
-                    phone       TEXT,
-                    subject     TEXT,
-                    message     TEXT,
-                    ip_address  TEXT,
-                    status      TEXT    DEFAULT 'new',
-                    telegram_id BIGINT,
-                    created_at  TIMESTAMPTZ DEFAULT NOW()
-                )
-            """)
-            await conn.execute("""
-                ALTER TABLE portfolio_messages ADD COLUMN IF NOT EXISTS phone TEXT;
-                ALTER TABLE portfolio_messages ADD COLUMN IF NOT EXISTS ip_address TEXT;
-                ALTER TABLE portfolio_messages ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'new';
-                ALTER TABLE portfolio_messages ADD COLUMN IF NOT EXISTS telegram_id BIGINT;
-            """)
 
             # ─── AI Conversations & Messages ────────────────────────────────
             await conn.execute("""
@@ -274,15 +253,6 @@ async def init_db_schema() -> None:
                 ON favorites (music_id)
             """)
 
-            # Portfolio messages
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_portfolio_messages_created_at
-                ON portfolio_messages (created_at DESC)
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_portfolio_messages_lookup
-                ON portfolio_messages (name, email)
-            """)
 
             # Processing Cache
             await conn.execute("""

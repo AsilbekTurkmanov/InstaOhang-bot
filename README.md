@@ -72,7 +72,6 @@ media_cache      — Telegram file_id cache (instant re-send)
 music_categories — Musiqa kategoriyalari
 music            — Musiqalar (file_unique_id UNIQUE)
 favorites        — User ↔ Music many-to-many (user_id+music_id UNIQUE)
-portfolio_messages — Portfolio veb-saytidan kelgan xabarlar
 ```
 
 ---

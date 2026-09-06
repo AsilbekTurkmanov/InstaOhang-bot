@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import (
@@ -8,13 +9,13 @@ from aiogram.types import (
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from config import ADMIN_IDS, PORTFOLIO_API_URL, PORTFOLIO_API_TOKEN
+from config import ADMIN_IDS
 from database.db import (
     get_stats, get_all_user_ids,
     add_channel, remove_channel, get_channels,
-    get_user_rank, get_portfolio_messages, upsert_portfolio_message,
+    get_user_rank,
 )
-from utils.helpers import clean_html
+from utils.helpers import clean_html, get_main_reply_keyboard
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -25,235 +26,12 @@ def is_admin(user_id: int) -> bool:
 
 
 class AdminStates(StatesGroup):
+    in_admin_panel = State()
     waiting_for_broadcast_msg = State()
     waiting_for_broadcast_confirm = State()
     waiting_for_channel_data = State()
 
-def _format_portfolio_card(msg: dict, index: int, total: int) -> tuple[str, InlineKeyboardMarkup]:
-    msg_id    = msg.get("id") or msg.get("Id") or index
-    name      = msg.get("name") or msg.get("Name") or msg.get("fullName") or "Noma'lum"
-    email     = msg.get("email") or msg.get("Email") or "-"
-    phone     = msg.get("phone") or msg.get("Phone") or msg.get("tel") or "-"
-    tg_id     = msg.get("telegram_id") or msg.get("telegramId") or msg.get("tgId")
-    ip_addr   = msg.get("ip_address") or msg.get("ipAddress") or msg.get("ip") or "-"
-    subject   = msg.get("subject") or msg.get("Subject") or "Mavzuga ega emas"
-    content   = msg.get("message") or msg.get("Message") or msg.get("content") or "-"
-    sent_at   = msg.get("sentAt") or msg.get("created_at") or msg.get("createdAt") or "-"
-    status    = msg.get("status") or msg.get("Status") or "yangi"
 
-    tg_str = f"<code>{tg_id}</code> (<a href='tg://user?id={tg_id}'>Profil</a>)" if tg_id else "-"
-
-    card_text = (
-        f"📩 <b>Portfolio Veb-Sayti Xabari</b> (<b>{index}/{total}</b>)\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🆔 <b>Xabar ID:</b> #{msg_id}\n"
-        f"👤 <b>F.I.SH / Ism:</b> {clean_html(str(name))}\n"
-        f"📧 <b>Email:</b> {clean_html(str(email))}\n"
-        f"📞 <b>Telefon:</b> {clean_html(str(phone))}\n"
-        f"🆔 <b>Telegram ID:</b> {tg_str}\n"
-        f"🌐 <b>IP Manzili:</b> {clean_html(str(ip_addr))}\n"
-        f"📊 <b>Holati:</b> {clean_html(str(status))}\n"
-        f"⏰ <b>Vaqti:</b> {clean_html(str(sent_at))}\n"
-        f"📌 <b>Mavzu:</b> {clean_html(str(subject))}\n"
-        f"💬 <b>Xabar matni:</b>\n{clean_html(str(content))}\n"
-        f"━━━━━━━━━━━━━━━━━━━"
-    )
-
-    nav_row = []
-    if index > 1:
-        nav_row.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"port_page:{index - 2}"))
-    nav_row.append(InlineKeyboardButton(text=f"📄 {index}/{total}", callback_data="noop"))
-    if index < total:
-        nav_row.append(InlineKeyboardButton(text="Keyingi ➡️", callback_data=f"port_page:{index}"))
-
-    buttons = [nav_row, [InlineKeyboardButton(text="🔄 Yangilash", callback_data="port_page:0")]]
-    return card_text, InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-async def check_and_notify_new_portfolio_messages(bot) -> None:
-    """
-    Checks portfolio API backend for new messages, saves them into PostgreSQL,
-    and immediately sends a push notification to all admins in ADMIN_IDS for new messages.
-    """
-    if not PORTFOLIO_API_URL:
-        return
-
-    try:
-        import aiohttp
-        headers = {}
-        if PORTFOLIO_API_TOKEN:
-            headers["Authorization"] = f"Bearer {PORTFOLIO_API_TOKEN}"
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                PORTFOLIO_API_URL,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=5),
-            ) as resp:
-                if resp.status != 200:
-                    return
-                api_messages = await resp.json()
-                if not isinstance(api_messages, list):
-                    return
-
-                for msg in api_messages:
-                    name = msg.get("name") or msg.get("Name") or msg.get("fullName") or "Noma'lum"
-                    email = msg.get("email") or msg.get("Email") or ""
-                    phone = msg.get("phone") or msg.get("Phone") or msg.get("tel")
-                    subject = msg.get("subject") or msg.get("Subject") or "Mavzuga ega emas"
-                    content = msg.get("message") or msg.get("Message") or msg.get("content") or ""
-                    ip_addr = msg.get("ip_address") or msg.get("ipAddress") or msg.get("ip")
-                    status = msg.get("status") or msg.get("Status") or "new"
-                    tg_id = msg.get("telegram_id") or msg.get("telegramId") or msg.get("tgId")
-
-                    is_new = await upsert_portfolio_message(
-                        name=name,
-                        email=email,
-                        subject=subject,
-                        message=content,
-                        phone=phone,
-                        ip_address=ip_addr,
-                        status=status,
-                        telegram_id=int(tg_id) if tg_id and str(tg_id).isdigit() else None,
-                    )
-
-                    if is_new and bot:
-                        # Send immediate Telegram notification to all admins
-                        tg_str = f"<code>{tg_id}</code> (<a href='tg://user?id={tg_id}'>Profil</a>)" if tg_id else "-"
-                        notify_text = (
-                            f"🔔 <b>YANGI PORTFOLIO XABARI KELDI!</b>\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"👤 <b>F.I.SH / Ism:</b> {clean_html(str(name))}\n"
-                            f"📧 <b>Email:</b> {clean_html(str(email))}\n"
-                            f"📞 <b>Telefon:</b> {clean_html(str(phone))}\n"
-                            f"🆔 <b>Telegram ID:</b> {tg_str}\n"
-                            f"🌐 <b>IP Manzili:</b> {clean_html(str(ip_addr))}\n"
-                            f"📌 <b>Mavzu:</b> {clean_html(str(subject))}\n"
-                            f"💬 <b>Xabar matni:</b>\n{clean_html(str(content))}\n"
-                            f"━━━━━━━━━━━━━━━━━━━"
-                        )
-                        for admin_id in ADMIN_IDS:
-                            try:
-                                await bot.send_message(admin_id, notify_text, parse_mode="HTML")
-                            except Exception as notify_err:
-                                logger.warning(f"Could not notify admin {admin_id}: {notify_err}")
-
-    except Exception as e:
-        logger.debug(f"Portfolio watcher sync info: {e}")
-
-
-async def _fetch_portfolio_messages(bot=None) -> list[dict]:
-    """
-    Fetches portfolio messages from C# API (if available), syncs them into PostgreSQL,
-    notifies admins if new, and returns ALL stored messages from PostgreSQL (from ID #1 up to N).
-    """
-    if bot:
-        await check_and_notify_new_portfolio_messages(bot)
-
-    # Fetch ALL stored messages from PostgreSQL (ordered by ID 1 to infinity)
-    db_messages = await get_portfolio_messages(limit=10000)
-    return db_messages
-
-
-@router.message(F.text == "📩 Portfolio xabarlari")
-@router.message(Command("portfolio"))
-async def cmd_portfolio_messages(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-
-    messages_list = await _fetch_portfolio_messages(bot=message.bot)
-
-    if not messages_list:
-        await message.answer(
-            "📭 <b>Portfolio veb-saytidan hali hech qanday xabar kelgani yo'q.</b>",
-            parse_mode="HTML",
-        )
-        return
-
-    # Render first message card instantly with pagination
-    card_text, reply_markup = _format_portfolio_card(messages_list[0], 1, len(messages_list))
-    await message.answer(card_text, reply_markup=reply_markup, parse_mode="HTML")
-
-
-@router.callback_query(F.data.startswith("port_page:"))
-async def cb_portfolio_page(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Kirish taqiqlangan", show_alert=True)
-        return
-
-    page_idx = int(callback.data.split(":")[1])
-    messages_list = await _fetch_portfolio_messages(bot=callback.bot)
-
-    if not messages_list:
-        await callback.answer("Xabarlar topilmadi", show_alert=True)
-        return
-
-    page_idx = max(0, min(page_idx, len(messages_list) - 1))
-    card_text, reply_markup = _format_portfolio_card(messages_list[page_idx], page_idx + 1, len(messages_list))
-
-    await callback.answer()
-    try:
-        await callback.message.edit_text(card_text, reply_markup=reply_markup, parse_mode="HTML")
-    except Exception:
-        pass
-
-
-@router.message(F.text.contains("Yangi Portfolio Aloqa Xabari"))
-async def auto_save_incoming_portfolio_notification(message: Message):
-    """
-    Catches incoming notifications sent by the C# Portfolio backend to Telegram,
-    parses Name, Email, Subject, Message, and automatically saves them into PostgreSQL database.
-    """
-    text = message.text or ""
-    try:
-        import re
-        name_match = re.search(r"Ism:\s*(.*?)(?=\n|$)", text)
-        name = name_match.group(1).strip() if name_match else "Noma'lum"
-
-        email_match = re.search(r"Email:\s*(.*?)(?=\n|$)", text)
-        email = email_match.group(1).strip() if email_match else ""
-
-        subject_match = re.search(r"Mavzu:\s*(.*?)(?=\n|$)", text)
-        subject = subject_match.group(1).strip() if subject_match else "Mavzuga ega emas"
-
-        msg_match = re.search(r"Xabar:\s*\n?(.*?)(?=\n⏰|\n⚡|\n👤|\n📧|\n📌|$)", text, re.DOTALL)
-        content = msg_match.group(1).strip() if msg_match else text
-
-        await upsert_portfolio_message(
-            name=name,
-            email=email,
-            subject=subject,
-            message=content,
-            status="yangi",
-        )
-        logger.info(f"Auto-saved portfolio notification to PostgreSQL: {name} ({email})")
-    except Exception as e:
-        logger.error(f"Error auto-saving portfolio notification: {e}")
-
-
-@router.message(Command("addtestmessage"))
-async def cmd_add_test_message(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-
-    user = message.from_user
-    from database.db import save_portfolio_message
-    await save_portfolio_message(
-        name=user.full_name,
-        email="client@portfolio.uz",
-        phone="+998991234567",
-        subject="Portfolio Hamkorlik Taklifi",
-        message="Assalomu alaykum Asilbek! Veb-saytingiz orqali bog'lanmoqdaman. Yangi loyiha bo'yicha gaplashsak bo'ladimi?",
-        ip_address="127.0.0.1",
-        status="yangi",
-        telegram_id=user.id,
-    )
-
-    await message.answer(
-        "✅ <b>Test portfolio xabari PostgreSQL bazasiga muvaffaqiyatli saqlandi!</b>\n\n"
-        "Endi <b>📩 Portfolio xabarlari</b> tugmasini bosing — barcha xabarlar ID #1 dan boshlab ko'rsatiladi!",
-        parse_mode="HTML",
-    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -269,7 +47,6 @@ def get_admin_menu_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="📢 Majburiy kanallar", callback_data="admin_channels"),
-            InlineKeyboardButton(text="📩 Portfolio xabarlari", callback_data="admin_portfolio"),
         ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -282,7 +59,7 @@ async def cmd_admin_panel(message: Message, state: FSMContext | None = None):
         return
 
     if state:
-        await state.clear()
+        await state.set_state(AdminStates.in_admin_panel)
 
     stats = await get_stats()
     channels = await get_channels()
@@ -304,7 +81,7 @@ async def cb_admin_menu(callback: CallbackQuery, state: FSMContext):
         await callback.answer("⛔ Kirish taqiqlangan", show_alert=True)
         return
 
-    await state.clear()
+    await state.set_state(AdminStates.in_admin_panel)
     stats = await get_stats()
     channels = await get_channels()
 
@@ -318,6 +95,31 @@ async def cb_admin_menu(callback: CallbackQuery, state: FSMContext):
     )
     await callback.answer()
     await callback.message.edit_text(admin_text, reply_markup=get_admin_menu_keyboard(), parse_mode="HTML")
+
+
+@router.message(AdminStates.in_admin_panel)
+async def handle_admin_panel_text(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+
+    text = (message.text or "").strip()
+    if text == "/cancel":
+        await state.clear()
+        await message.answer(
+            "❌ <b>Admin paneldan chiqildi.</b>",
+            reply_markup=get_main_reply_keyboard(True),
+            parse_mode="HTML",
+        )
+        return
+
+    await message.answer(
+        "⚡ <b>Siz hozirda Admin Panelidasiz!</b>\n\n"
+        "Musiqa qidirish ushbu bo'limda faolsizlantirilgan.\n"
+        "Quyidagi boshqaruv menyusidan kerakli amalni tanlang yoki admin paneldan chiqish uchun <code>/cancel</code> bosing:",
+        reply_markup=get_admin_menu_keyboard(),
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data == "admin_stats")
@@ -655,7 +457,7 @@ async def cb_admin_channels(callback: CallbackQuery, state: FSMContext):
         await callback.answer("⛔ Kirish taqiqlangan", show_alert=True)
         return
 
-    await state.clear()
+    await state.set_state(AdminStates.in_admin_panel)
     channels = await get_channels()
 
     if channels:
@@ -690,10 +492,13 @@ async def cb_admin_add_channel(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await callback.message.edit_text(
         "➕ <b>Yangi Majburiy Kanal Qo'shish:</b>\n\n"
-        "Kanal ma'lumotlarini quyidagi ko'rinishda yuboring:\n"
-        "<code>&lt;kanal_id&gt; | &lt;sarlavha&gt; | &lt;havola&gt;</code>\n\n"
-        "<i>Misol:</i>\n"
-        "<code>-1001234567890 | Bizning Kanal | https://t.me/bizning_kanal</code>\n\n"
+        "Kanalni qo'shish uchun quyidagi usullardan biri orqali yuboring:\n\n"
+        "1️⃣ <b>Havola yoki username:</b>\n"
+        "<code>https://t.me/kanal_nomi</code> yoki <code>@kanal_nomi</code>\n\n"
+        "2️⃣ <b>To'liq format:</b>\n"
+        "<code>&lt;kanal_id&gt; | &lt;sarlavha&gt; | &lt;havola&gt;</code>\n"
+        "<i>Misol: -1001234567890 | Bizning Kanal | https://t.me/bizning_kanal</i>\n\n"
+        "3️⃣ <b>Kanaldan xabarni forward qilib yuborishingiz ham mumkin!</b>\n\n"
         "⚠️ <b>Eslatma:</b> Bot o'sha kanalda <b>Admin</b> qilingan bo'lishi shart!\n"
         "Bekor qilish uchun: /cancel",
         reply_markup=kb,
@@ -706,31 +511,97 @@ async def process_channel_data_input(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
 
-    text = message.text or ""
-    if text.strip() == "/cancel":
-        await state.clear()
+    text = (message.text or "").strip()
+    if text == "/cancel":
+        await state.set_state(AdminStates.in_admin_panel)
         await message.answer("❌ Kanal qo'shish bekor qilindi.", reply_markup=get_admin_menu_keyboard(), parse_mode="HTML")
         return
 
-    parts = [p.strip() for p in text.split("|") if p.strip()]
-    if len(parts) < 3:
-        parts = text.split(maxsplit=2)
+    ch_id = None
+    title = ""
+    link = ""
 
-    if len(parts) < 3:
+    # Case 1: Post forwarded from a channel
+    if message.forward_from_chat and message.forward_from_chat.type == "channel":
+        ch = message.forward_from_chat
+        ch_id = ch.id
+        title = ch.title or "Kanal"
+        link = f"https://t.me/{ch.username}" if ch.username else ""
+
+    # Case 2: Pipe separated or space separated
+    if ch_id is None and text:
+        parts = [p.strip() for p in text.split("|") if p.strip()]
+        if len(parts) >= 3:
+            raw_id, raw_title, raw_link = parts[0], parts[1], parts[2]
+            try:
+                ch_id = int(raw_id)
+            except ValueError:
+                ch_id = None
+            title = raw_title
+            link = raw_link
+        elif len(parts) == 2:
+            title = parts[0]
+            link = parts[1]
+        elif len(parts) == 1:
+            link = parts[0]
+
+    # Resolve from username or link if ch_id is missing or dummy (< 10000)
+    target_link = link or text
+    if (ch_id is None or (0 <= ch_id < 10000)) and target_link:
+        username_match = re.search(r"(?:https?://(?:www\.)?t\.me/|@)([a-zA-Z0-9_]{4,32})", target_link)
+        if username_match:
+            username = username_match.group(1)
+            try:
+                chat = await message.bot.get_chat(f"@{username}")
+                ch_id = chat.id
+                if not title or title.isdigit():
+                    title = chat.title or username
+                if not link or "t.me" not in link:
+                    link = f"https://t.me/{username}"
+            except Exception as e:
+                logger.warning(f"Could not resolve chat @{username} via get_chat: {e}")
+
+    # Fallback to direct numeric ID query
+    if ch_id is not None and not title:
+        try:
+            chat = await message.bot.get_chat(ch_id)
+            title = chat.title or f"Kanal {ch_id}"
+            if not link and chat.username:
+                link = f"https://t.me/{chat.username}"
+        except Exception:
+            title = f"Kanal {ch_id}"
+
+    if ch_id is None:
         await message.answer(
-            "⚠️ Noto'g'ri format! Iltimos quyidagicha yuboring:\n"
+            "⚠️ <b>Kanal aniqlanmadi!</b>\n\n"
+            "Iltimos, kanal havolasini (masalan: <code>https://t.me/kanal</code>) yoki to'liq formatda yuboring:\n"
             "<code>&lt;kanal_id&gt; | &lt;sarlavha&gt; | &lt;havola&gt;</code>\n"
             "<i>Misol: -1001234567890 | Kanal | https://t.me/kanal</i>",
             parse_mode="HTML",
         )
         return
 
+    # Check bot administrator status in channel
     try:
-        ch_id = int(parts[0])
-        title = parts[1]
-        link = parts[2]
+        member = await message.bot.get_chat_member(chat_id=ch_id, user_id=message.bot.id)
+        if member.status not in {"administrator", "creator"}:
+            await message.answer(
+                f"⚠️ <b>Bot ushbu kanalda ({clean_html(title or str(ch_id))}) Admin emas!</b>\n\n"
+                f"Iltimos, avval botni kanalingizga qo'shib, unga <b>Admin</b> huquqini bering, so'ng qayta yuboring.",
+                parse_mode="HTML",
+            )
+            return
+    except Exception as member_err:
+        logger.warning(f"Could not verify chat member status for {ch_id}: {member_err}")
+
+    if not title:
+        title = f"Kanal {ch_id}"
+    if not link:
+        link = f"https://t.me/c/{str(ch_id).replace('-100', '')}"
+
+    try:
         await add_channel(ch_id, title, link)
-        await state.clear()
+        await state.set_state(AdminStates.in_admin_panel)
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📢 Kanallar ro'yxati", callback_data="admin_channels")],
@@ -744,10 +615,9 @@ async def process_channel_data_input(message: Message, state: FSMContext):
             reply_markup=kb,
             parse_mode="HTML",
         )
-    except ValueError:
-        await message.answer("❌ Kanal ID raqam bo'lishi kerak (masalan: <code>-1001234567890</code>).", parse_mode="HTML")
     except Exception as e:
         await message.answer(f"❌ Xatolik yuz berdi: {clean_html(str(e))}")
+
 
 
 @router.callback_query(F.data == "admin_del_channel_menu")
@@ -796,20 +666,7 @@ async def cb_delete_single_channel(callback: CallbackQuery):
     await cb_admin_channels(callback, None)
 
 
-@router.callback_query(F.data == "admin_portfolio")
-async def cb_admin_portfolio(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Kirish taqiqlangan", show_alert=True)
-        return
 
-    messages_list = await _fetch_portfolio_messages(bot=callback.bot)
-    if not messages_list:
-        await callback.answer("Portfolio xabarlari topilmadi", show_alert=True)
-        return
-
-    card_text, reply_markup = _format_portfolio_card(messages_list[0], 1, len(messages_list))
-    await callback.answer()
-    await callback.message.edit_text(card_text, reply_markup=reply_markup, parse_mode="HTML")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

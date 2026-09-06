@@ -1,6 +1,7 @@
 import logging
 from aiogram import Router, F
 from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
 
 from database.db import upsert_user
@@ -17,7 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, state: FSMContext | None = None):
+    if state:
+        await state.clear()
     user = message.from_user
     user_id = user.id
 
@@ -90,7 +93,9 @@ async def cb_check_subscription(callback: CallbackQuery):
 
 
 @router.message(F.text == "ℹ️ Bot haqida")
-async def cmd_about(message: Message):
+async def cmd_about(message: Message, state: FSMContext | None = None):
+    if state:
+        await state.clear()
     about_text = (
         "🤖 <b>InstaOhang Bot</b>\n\n"
         "✨ Instagram-dan yuqori sifatli video, reels va musiqalarni yuklovchi hamda "
@@ -102,7 +107,9 @@ async def cmd_about(message: Message):
 
 
 @router.message(F.text == "⭕ Dumaloq Video haqida")
-async def cmd_round_info(message: Message):
+async def cmd_round_info(message: Message, state: FSMContext | None = None):
+    if state:
+        await state.clear()
     info_text = (
         "⭕ <b>Dumaloq Video (/round) qanday ishlaydi?</b>\n\n"
         "1. Bot sizga yuborgan videoga (yoki o'zingiz botga yuborgan videoga) <b>Reply (Otvetit)</b> qiling.\n"

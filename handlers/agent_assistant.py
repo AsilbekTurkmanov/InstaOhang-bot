@@ -1,6 +1,7 @@
 import logging
 from aiogram import Router, F
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from utils.helpers import clean_html
 from services.ai_service import process_ai_request, clear_conversation
@@ -15,8 +16,10 @@ AGENT_VERSION = "v3.0 Production Sub-Agent"
 @router.message(Command("agent"))
 @router.message(Command("ai"))
 @router.message(F.text == "🤖 AI Agent")
-async def cmd_agent_status(message: Message):
+async def cmd_agent_status(message: Message, state: FSMContext | None = None):
     """Triggers AI Agent prompt response."""
+    if state:
+        await state.clear()
     status_msg = await message.answer("🧠 <b>Sun'iy Intellekt AI Agent javob tayyorlamoqda... ⏳</b>", parse_mode="HTML")
     
     prompt = (
@@ -50,8 +53,10 @@ async def cmd_clear_ai_memory(message: Message):
 
 @router.message(Command("agent_info"))
 @router.message(F.text == "⚙️ AI Agent-Info")
-async def cmd_agent_info(message: Message):
+async def cmd_agent_info(message: Message, state: FSMContext | None = None):
     """Technical info about AI agent system."""
+    if state:
+        await state.clear()
     info_text = (
         "⚙️ <b>AI Sub-Agent System Architecture:</b>\n\n"
         "• <b>Status:</b> 🟢 ONLINE & ACTIVE\n"

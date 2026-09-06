@@ -7,6 +7,7 @@ import logging
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 
 from database.db import (
     get_user_favorites,
@@ -104,7 +105,9 @@ async def send_favorites_page(message: Message, user_id: int, page: int = 0):
 
 @router.message(F.text == "❤️ Sevimlilar")
 @router.message(Command("favorites"))
-async def cmd_favorites(message: Message):
+async def cmd_favorites(message: Message, state: FSMContext | None = None):
+    if state:
+        await state.clear()
     user_id = message.from_user.id
 
     is_subbed, missing = await check_user_subscriptions(message.bot, user_id)
@@ -193,27 +196,36 @@ async def cb_favorite_remove(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("fav_play:"))
 async def cb_favorite_play(callback: CallbackQuery):
     """Handler for playing a music from favorites list using cached file_id from DB."""
-    music_id = int(callback.data.split(":")[1])
+    try:
+        music_id = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer("❌ Noto'g'ri musiqa ID!", show_alert=True)
+        return
+
     await callback.answer("🎵 Yuklanmoqda...")
 
     try:
         pool = get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT title, artist, file_id FROM music WHERE id = $1 AND is_active = TRUE",
+                "SELECT id, title, artist, file_id FROM music WHERE id = $1 AND is_active = TRUE",
                 music_id,
             )
-        if not row:
-            await callback.answer("❌ Musiqa topilmadi!", show_alert=True)
+        if not row or not row["file_id"]:
+            await callback.answer("❌ Musiqa fayli topilmadi!", show_alert=True)
             return
 
+        from handlers.music_search import build_audio_action_keyboard
+        from database.db import increment_music_views
         await callback.message.answer_audio(
             audio=row["file_id"],
             title=clean_html(row["title"]),
             performer=clean_html(row["artist"] or "Unknown"),
             caption="🎧 <b>InstaOhang Music</b> — Sevimlilaringizdan\n🤖 @InstaOhang_bot",
+            reply_markup=build_audio_action_keyboard(music_id, is_fav=True),
             parse_mode="HTML",
         )
+        await increment_music_views(music_id)
     except Exception as e:
         logger.error(f"fav_play error (music_id={music_id}): {e}")
         await callback.answer("❌ Yuklashda xatolik yuz berdi!", show_alert=True)
@@ -221,30 +233,96 @@ async def cb_favorite_play(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("fav_add:"))
 async def cb_favorite_add(callback: CallbackQuery):
-    """Handler for adding a music to favorites (called from music search results)."""
-    music_id = int(callback.data.split(":")[1])
-    user_id = callback.from_user.id
+    """Handler for adding a music to favorites (called from audio message buttons)."""
+    try:
+        music_id = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer("❌ Noto'g'ri musiqa ID!", show_alert=True)
+        return
 
+    user_id = callback.from_user.id
     added = await add_favorite(user_id, music_id)
+    from handlers.music_search import build_audio_action_keyboard
+
     if added:
         await callback.answer("❤️ Sevimlilar ro'yxatiga qo'shildi!", show_alert=False)
+        try:
+            await callback.message.edit_reply_markup(
+                reply_markup=build_audio_action_keyboard(music_id, is_fav=True)
+            )
+        except Exception as edit_err:
+            logger.debug(f"Could not update button after fav_add: {edit_err}")
     else:
-        await callback.answer("Allaqachon sevimlilar ro'yxatida!", show_alert=True)
+        already = await is_favorite(user_id, music_id)
+        if already:
+            await callback.answer("Allaqachon sevimlilar ro'yxatida!", show_alert=False)
+            try:
+                await callback.message.edit_reply_markup(
+                    reply_markup=build_audio_action_keyboard(music_id, is_fav=True)
+                )
+            except Exception:
+                pass
+        else:
+            await callback.answer("❌ Sevimlilarga qo'shishda xatolik!", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("fav_remove_track:"))
+async def cb_favorite_remove_track(callback: CallbackQuery):
+    """Handler for removing a music track directly from the audio message button."""
+    try:
+        music_id = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer("❌ Noto'g'ri musiqa ID!", show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+    removed = await remove_favorite(user_id, music_id)
+    from handlers.music_search import build_audio_action_keyboard
+
+    if removed:
+        await callback.answer("💔 Sevimlilardan o'chirildi.", show_alert=False)
+    else:
+        await callback.answer("Allaqachon o'chirilgan.", show_alert=False)
+
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=build_audio_action_keyboard(music_id, is_fav=False)
+        )
+    except Exception as edit_err:
+        logger.debug(f"Could not update button after fav_remove_track: {edit_err}")
 
 
 @router.callback_query(F.data.startswith("fav_toggle:"))
 async def cb_favorite_toggle(callback: CallbackQuery):
     """Toggles favorite status (add/remove) for a music track."""
-    music_id = int(callback.data.split(":")[1])
-    user_id = callback.from_user.id
+    try:
+        music_id = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer("❌ Noto'g'ri musiqa ID!", show_alert=True)
+        return
 
+    user_id = callback.from_user.id
     already = await is_favorite(user_id, music_id)
+    from handlers.music_search import build_audio_action_keyboard
+
     if already:
         await remove_favorite(user_id, music_id)
         await callback.answer("💔 Sevimlilardan o'chirildi.", show_alert=False)
+        try:
+            await callback.message.edit_reply_markup(
+                reply_markup=build_audio_action_keyboard(music_id, is_fav=False)
+            )
+        except Exception:
+            pass
     else:
         await add_favorite(user_id, music_id)
         await callback.answer("❤️ Sevimlilar ro'yxatiga qo'shildi!", show_alert=False)
+        try:
+            await callback.message.edit_reply_markup(
+                reply_markup=build_audio_action_keyboard(music_id, is_fav=True)
+            )
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data == "noop")

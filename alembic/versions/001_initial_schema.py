@@ -102,21 +102,6 @@ def upgrade() -> None:
         )
     """)
 
-    # Portfolio Messages
-    op.execute("""
-        CREATE TABLE IF NOT EXISTS portfolio_messages (
-            id          BIGSERIAL PRIMARY KEY,
-            name        TEXT,
-            email       TEXT,
-            phone       TEXT,
-            subject     TEXT,
-            message     TEXT,
-            ip_address  TEXT,
-            status      TEXT    DEFAULT 'new',
-            telegram_id BIGINT,
-            created_at  TIMESTAMPTZ DEFAULT NOW()
-        )
-    """)
 
     # AI Conversations & Messages
     op.execute("""
@@ -156,7 +141,6 @@ def downgrade() -> None:
     op.execute("DROP TABLE IF EXISTS media_processing_cache CASCADE;")
     op.execute("DROP TABLE IF EXISTS ai_messages CASCADE;")
     op.execute("DROP TABLE IF EXISTS ai_conversations CASCADE;")
-    op.execute("DROP TABLE IF EXISTS portfolio_messages CASCADE;")
     op.execute("DROP TABLE IF EXISTS favorites CASCADE;")
     op.execute("DROP TABLE IF EXISTS music CASCADE;")
     op.execute("DROP TABLE IF EXISTS music_categories CASCADE;")
