@@ -81,11 +81,11 @@ async def handle_youtube_link(message: Message):
             t.checkpoint("download")
 
             filepath = media_data["filepath"]
-            title = clean_html(media_data["title"])
-            author = clean_html(media_data["author"])
+            title_raw = str(media_data.get("title") or "YouTube Video")
+            author_raw = str(media_data.get("author") or "YouTube")
 
-            title_display = title[:100] + "..." if len(title) > 100 else title
-            author_display = author[:50] if len(author) > 50 else author
+            title_display = clean_html(title_raw[:100] + "..." if len(title_raw) > 100 else title_raw)
+            author_display = clean_html(author_raw[:50] if len(author_raw) > 50 else author_raw)
             caption = f"🎬 <b>{author_display}</b>\n\n{title_display}\n\n🤖 @InstaOhang_bot"
 
             is_valid, size_mb = check_file_size(filepath)

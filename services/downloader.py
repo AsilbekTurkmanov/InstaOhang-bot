@@ -887,8 +887,82 @@ def get_media_origin(unique_id: str) -> str | None:
 # YouTube Video Download (Full MP4 video)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _try_loader_video_download(video_id: str, unique_id: str) -> dict | None:
+    """
+    Downloads YouTube video via Loader.to API engine.
+    Bypasses YouTube bot checks / SABR / IP blocks on datacenter IPs cleanly.
+    """
+    import urllib.request
+    import json
+    import time
+
+    url_yt = f"https://www.youtube.com/watch?v={video_id}"
+    target_path = os.path.join(DOWNLOAD_DIR, f"yt_vid_{unique_id}.mp4")
+
+    for fmt in ["720", "360"]:
+        try:
+            url1 = f"https://loader.to/ajax/download.php?format={fmt}&url={url_yt}"
+            req1 = urllib.request.Request(url1, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+            res1 = json.loads(urllib.request.urlopen(req1, timeout=10).read().decode("utf-8"))
+
+            job_id = res1.get("id")
+            title = res1.get("title") or "YouTube Video"
+            info_meta = res1.get("info") or {}
+            thumb = info_meta.get("image") or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+
+            if not job_id:
+                logger.warning(f"[Loader.to Video] No job ID returned for format {fmt}")
+                continue
+
+            logger.info(f"[Loader.to Video] Started download job {job_id} for '{title}' (format {fmt})")
+            dl_url = None
+            for _ in range(25):
+                time.sleep(1.5)
+                url2 = f"https://loader.to/ajax/progress.php?id={job_id}"
+                req2 = urllib.request.Request(url2, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                res2 = json.loads(urllib.request.urlopen(req2, timeout=10).read().decode("utf-8"))
+                if res2.get("download_url"):
+                    dl_url = res2["download_url"]
+                    break
+
+            if not dl_url:
+                logger.warning(f"[Loader.to Video] Timed out waiting for download_url (job {job_id})")
+                continue
+
+            logger.info(f"[Loader.to Video] Downloading video stream from {dl_url[:60]}...")
+            req_dl = urllib.request.Request(dl_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+            with urllib.request.urlopen(req_dl, timeout=180) as resp:
+                with open(target_path, "wb") as f:
+                    while True:
+                        chunk = resp.read(131072)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+
+            if os.path.exists(target_path) and os.path.getsize(target_path) > 10240:
+                logger.info(f"[Loader.to Video] ✅ Success downloading '{title}' ({os.path.getsize(target_path)} bytes)")
+                return {
+                    "type": "video",
+                    "filepath": target_path,
+                    "title": title,
+                    "author": "YouTube",
+                    "duration": 0,
+                    "thumbnail": thumb,
+                    "id": video_id,
+                }
+        except Exception as e:
+            logger.warning(f"[Loader.to Video] Engine error ({fmt}): {e}")
+            if os.path.exists(target_path):
+                try:
+                    os.remove(target_path)
+                except Exception:
+                    pass
+
+    return None
+
+
 def _do_youtube_video_download(url_or_id: str) -> dict:
-    """Blocking YouTube video download (runs in thread pool)."""
+    """Blocking YouTube video download (runs in thread pool) with multi-stage fallbacks."""
     from services.youtube_parser import parse_youtube_url
     parsed = parse_youtube_url(url_or_id)
     video_id = parsed.video_id if parsed else url_or_id.strip()
@@ -896,46 +970,62 @@ def _do_youtube_video_download(url_or_id: str) -> dict:
     unique_id = str(uuid.uuid4())[:8]
     output_template = os.path.join(DOWNLOAD_DIR, f"yt_vid_{unique_id}.%(ext)s")
 
-    opts = get_yt_dlp_options({
-        "format": "18/22/bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best[height<=720]/best",
-        "outtmpl": output_template,
-        "merge_output_format": "mp4",
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
-    })
+    format_selector = (
+        "22/18/"
+        "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/"
+        "best[height<=720][ext=mp4]/"
+        "bestvideo[height<=720]+bestaudio/"
+        "best[height<=720]/"
+        "best"
+    )
 
-    try:
-        with yt_dlp.YoutubeDL(opts) as ytdl:
-            info = ytdl.extract_info(url, download=True)
-            title = info.get("title") or "YouTube Video"
-            author = info.get("uploader") or info.get("channel") or "YouTube"
-            duration = int(info.get("duration") or 0)
-            thumbnail = info.get("thumbnail")
+    # ── Stage 1: Primary yt-dlp with android client ──
+    for client in [["android"], ["android_vr"]]:
+        opts = get_yt_dlp_options({
+            "format": format_selector,
+            "outtmpl": output_template,
+            "merge_output_format": "mp4",
+            "extractor_args": {"youtube": {"player_client": client}},
+        })
+        try:
+            with yt_dlp.YoutubeDL(opts) as ytdl:
+                info = ytdl.extract_info(url, download=True)
+                title = info.get("title") or "YouTube Video"
+                author = info.get("uploader") or info.get("channel") or "YouTube"
+                duration = int(info.get("duration") or 0)
+                thumbnail = info.get("thumbnail")
 
-            # Locate downloaded file
-            prefix = f"yt_vid_{unique_id}"
-            found_fp = None
-            for f in os.listdir(DOWNLOAD_DIR):
-                if f.startswith(prefix):
-                    candidate = os.path.join(DOWNLOAD_DIR, f)
-                    if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
-                        found_fp = candidate
-                        break
+                # Locate downloaded file
+                prefix = f"yt_vid_{unique_id}"
+                found_fp = None
+                for f in os.listdir(DOWNLOAD_DIR):
+                    if f.startswith(prefix):
+                        candidate = os.path.join(DOWNLOAD_DIR, f)
+                        if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
+                            found_fp = candidate
+                            break
 
-            if not found_fp or not os.path.exists(found_fp):
-                raise RuntimeError("Video fayli saqlanmadi.")
+                if found_fp and os.path.exists(found_fp):
+                    return {
+                        "type": "video",
+                        "filepath": found_fp,
+                        "title": title,
+                        "author": author,
+                        "duration": duration,
+                        "thumbnail": thumbnail,
+                        "id": video_id,
+                    }
+        except Exception as primary_err:
+            logger.warning(f"[YouTube Video] yt-dlp stage ({client}) failed: {primary_err}")
 
-            return {
-                "type": "video",
-                "filepath": found_fp,
-                "title": title,
-                "author": author,
-                "duration": duration,
-                "thumbnail": thumbnail,
-                "id": video_id,
-            }
-    except Exception as e:
-        logger.error(f"[YouTube Video] Download failed: {e}")
-        raise RuntimeError(f"YouTube videosini yuklab bo'lmadi: {e}")
+    # ── Stage 2: High-speed Loader.to Video Engine Fallback ──
+    logger.info(f"[YouTube Video] yt-dlp failed, switching to Loader.to video fallback engine...")
+    fallback_res = _try_loader_video_download(video_id, unique_id)
+    if fallback_res:
+        return fallback_res
+
+    logger.error(f"[YouTube Video] All download engines failed for video {video_id}")
+    raise RuntimeError("YouTube videosini yuklab bo'lmadi. Havola to'g'riligini tekshiring yoki birozdan so'ng qayta urinib ko'ring.")
 
 
 async def download_youtube_video(url_or_id: str) -> dict:
