@@ -33,6 +33,10 @@ def parse_instagram_url(url: str) -> Optional[ParsedInstagramUrl]:
         return None
 
     raw_text = str(url).strip()
+    parsed_raw = urlparse(raw_text)
+    if parsed_raw.scheme not in {"http", "https"}:
+        return None
+
     match = INSTAGRAM_REGEX.search(raw_text)
     if not match:
         return None
